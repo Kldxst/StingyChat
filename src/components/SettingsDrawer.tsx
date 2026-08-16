@@ -11,7 +11,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { compressConversation, generateSystemPrompt } from '../lib/api';
 import {
   loadPersonalGlmSecret,
@@ -71,6 +71,7 @@ export function SettingsDrawer() {
   const [notice, setNotice] = useState('');
   const [fewInput, setFewInput] = useState('');
   const [fewOutput, setFewOutput] = useState('');
+  const drawerRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     setBaseUrl(activeProfile?.baseUrl ?? '');
@@ -85,6 +86,24 @@ export function SettingsDrawer() {
     if (!open) return;
     void loadPersonalGlmSecret().then((value) => setHasPersonalGlmKey(Boolean(value)));
   }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const frame = requestAnimationFrame(() => drawerRef.current?.querySelector<HTMLElement>('button')?.focus());
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); setOpen(false); return; }
+      if (event.key !== 'Tab' || !drawerRef.current) return;
+      const focusable = [...drawerRef.current.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [href], [tabindex]:not([tabindex="-1"])')];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => { cancelAnimationFrame(frame); document.removeEventListener('keydown', onKeyDown); previousFocus?.focus(); };
+  }, [open, setOpen]);
 
   if (!activeProfile || !conversation) return null;
 
@@ -186,7 +205,11 @@ export function SettingsDrawer() {
             exit={{ opacity: 0 }}
           />
           <motion.aside
+            ref={drawerRef}
             className="settings-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-label="设置"
             initial={{ opacity: 0, y: 22, scale: 0.97 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 12, scale: 0.98 }}
@@ -392,12 +415,15 @@ export function SettingsDrawer() {
 
               {tab === 'advanced' ? (
                 <div className="settings-section">
+                  <div className="section-heading"><Sparkles size={16} /><h3>外观</h3></div>
+                  <div className="field"><FieldLabel>主题</FieldLabel><div className="settings-segmented" role="group" aria-label="主题">{([['system', '跟随系统'], ['light', '浅色'], ['dark', '深色']] as const).map(([value, label]) => <button type="button" key={value} className={settings.theme === value ? 'active' : ''} onClick={() => void updateSettings({ theme: value })}>{label}</button>)}</div></div>
+                  <div className="section-divider" />
                   <div className="section-heading"><BrainCircuit size={16} /><h3>生成参数</h3></div>
                   <label className="field"><FieldLabel>Temperature · {settings.temperature.toFixed(1)}</FieldLabel><input type="range" min="0" max="2" step="0.1" value={settings.temperature} onChange={(event) => void updateSettings({ temperature: Number(event.target.value) })} /></label>
                   <label className="field"><FieldLabel>Top P · {settings.topP.toFixed(1)}</FieldLabel><input type="range" min="0.1" max="1" step="0.1" value={settings.topP} onChange={(event) => void updateSettings({ topP: Number(event.target.value) })} /></label>
                   <label className="field"><FieldLabel>上下文压缩阈值 · {Math.round(settings.compressionThreshold * 100)}%</FieldLabel><input type="range" min="0.4" max="0.9" step="0.05" value={settings.compressionThreshold} onChange={(event) => void updateSettings({ compressionThreshold: Number(event.target.value) })} /></label>
                   <label className="field"><FieldLabel>检索片段数 · {settings.retrievalTopK}</FieldLabel><input type="range" min="1" max="10" step="1" value={settings.retrievalTopK} onChange={(event) => void updateSettings({ retrievalTopK: Number(event.target.value) })} /></label>
-                  <label className="field"><FieldLabel>思考强度</FieldLabel><select value={settings.reasoningEffort} onChange={(event) => void updateSettings({ reasoningEffort: event.target.value as OptimizationSettings['reasoningEffort'] })} disabled={!activeProfile.capabilities.reasoningEffort}><option value="minimal">最低</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label>
+                  <div className="field"><FieldLabel>思考强度</FieldLabel><div className="settings-segmented four" role="group" aria-label="思考强度">{([['minimal', '最低'], ['low', '低'], ['medium', '中'], ['high', '高']] as const).map(([value, label]) => <button type="button" key={value} className={settings.reasoningEffort === value ? 'active' : ''} onClick={() => void updateSettings({ reasoningEffort: value })}>{label}</button>)}</div></div>
                   <label className="field"><FieldLabel>停止词（每行一个）</FieldLabel><textarea rows={3} value={settings.stopSequences.join('\n')} onChange={(event) => void updateSettings({ stopSequences: event.target.value.split('\n').map((item) => item.trim()).filter(Boolean).slice(0, 8) })} /></label>
                 </div>
               ) : null}

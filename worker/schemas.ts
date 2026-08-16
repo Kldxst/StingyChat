@@ -89,6 +89,8 @@ const settingsSchema = z.object({
   simpleProfileId: z.string().optional(),
   complexProfileId: z.string().optional(),
   pinModel: z.boolean(),
+  autoSkills: z.boolean(),
+  theme: z.enum(['system', 'light', 'dark']),
 });
 
 export const chatRequestSchema = z.object({

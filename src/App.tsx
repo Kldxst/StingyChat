@@ -33,6 +33,18 @@ export default function App() {
   const profile = profiles.find((item) => item.id === conversation?.providerProfileId) ?? profiles[0];
 
   useEffect(() => { void initialize(); }, [initialize]);
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const apply = () => {
+      const preference = settings.theme === 'light' || settings.theme === 'dark' ? settings.theme : 'system';
+      const resolved = preference === 'system' ? (media.matches ? 'dark' : 'light') : preference;
+      document.documentElement.dataset.theme = resolved;
+      document.documentElement.style.colorScheme = resolved;
+    };
+    apply();
+    media.addEventListener('change', apply);
+    return () => media.removeEventListener('change', apply);
+  }, [settings.theme]);
   useLayoutEffect(() => {
     const workspace = mainColumnRef.current?.querySelector<HTMLElement>(':scope > .workspace-view');
     if (workspace) workspace.scrollTop = 0;

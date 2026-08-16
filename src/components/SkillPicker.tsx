@@ -1,6 +1,8 @@
 import { Check, Search, WandSparkles, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useMemo, useState } from 'react';
+import { useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { CHAT_SKILLS } from '../lib/skills';
 import { IconButton } from './ui';
 
@@ -16,6 +18,7 @@ export function SkillPicker({
   onClose: () => void;
 }) {
   const [query, setQuery] = useState('');
+  const panelRef = useRef<HTMLElement>(null);
   const visible = useMemo(() => {
     const keyword = query.trim().toLocaleLowerCase();
     return keyword
@@ -23,19 +26,25 @@ export function SkillPicker({
       : CHAT_SKILLS;
   }, [query]);
 
-  return (
+  useEffect(() => {
+    if (!open) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      previous?.focus();
+    };
+  }, [onClose, open]);
+
+  if (typeof document === 'undefined') return null;
+  return createPortal(
     <AnimatePresence>
       {open ? (
-        <motion.section
-          className="skill-picker"
-          role="dialog"
-          aria-modal="false"
-          aria-label="选择 Skills"
-          initial={{ opacity: 0, y: 12, scale: 0.98 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: 8, scale: 0.99 }}
-          transition={{ duration: 0.18 }}
-        >
+        <motion.div className="skill-picker-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+        <motion.section ref={panelRef} className="skill-picker" role="dialog" aria-modal="true" aria-label="选择 Skills" initial={{ opacity: 0, y: 12, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: 0.99 }} transition={{ duration: 0.18 }}>
           <header>
             <span><WandSparkles size={17} /><strong>Skills</strong><small>输入 $$ 可随时打开</small></span>
             <IconButton label="关闭 Skills" onClick={onClose}><X size={17} /></IconButton>
@@ -54,16 +63,19 @@ export function SkillPicker({
                   key={skill.id}
                   onClick={() => onChange(active ? selected.filter((id) => id !== skill.id) : [...selected, skill.id])}
                 >
-                  <span><b>{skill.name}</b><small>{skill.category}</small></span>
-                  <p>{skill.description}</p>
-                  <i>{active ? <Check size={14} /> : null}</i>
+                   <span><b>{skill.name}</b><small>{skill.category} · {skill.runtime === 'browser' ? '工具执行' : skill.runtime === 'postprocess' ? '结果处理' : '工作流'}</small></span>
+                   <p>{skill.description}</p>
+                   <em>{skill.source}</em>
+                   {active ? <i><Check size={14} /></i> : null}
                 </button>
               );
             })}
           </div>
           <footer><span>已启用 {selected.length} 项</span><button type="button" className="primary-button" onClick={onClose}>完成</button></footer>
         </motion.section>
+        </motion.div>
       ) : null}
     </AnimatePresence>
+    , document.body
   );
 }

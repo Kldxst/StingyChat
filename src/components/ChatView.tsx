@@ -8,6 +8,7 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import {
   compressConversation,
+  generateConversationTitle,
   normalizeForSemanticCache,
   loginAdmin,
   optimizeWithGlm,
@@ -35,10 +36,10 @@ import {
 } from '../lib/semantic';
 import { estimateMessages, estimateTokens, estimateTokensForModel } from '../lib/tokens';
 import { estimateAttachmentTokens } from '../lib/tokenLedger';
-import { buildSkillsPrompt, skillName } from '../lib/skills';
-import { extractGeneratedArtifacts } from '../lib/artifacts';
+import { autoSelectSkillIds, buildSkillsPrompt, executePostflightSkills, executePreflightSkills, skillName } from '../lib/skills';
 import { captureClientRuntimeContext, runtimeContextPrompt } from '../lib/runtimeContext';
 import { requiresUserApiKey } from '../lib/providerAuth';
+import { ChatResponseError } from '../lib/sse';
 import { useAppStore } from '../store';
 import type {
   ChatMessage,
@@ -63,6 +64,25 @@ interface CacheProposal {
   candidate: SemanticCacheEntry;
   fingerprint: string;
   routeReason?: string;
+}
+
+const QUICK_PROMPT_POOL = [
+  '把这段会议记录整理成行动项', '修复这段 JSON 并只返回结果', '计算这组数据的增长率',
+  '审查这段代码中的潜在缺陷', '从附件中提取关键结论', '把需求拆成可执行任务',
+  '生成一个可下载的 Markdown 报告', '比较两个方案的成本与风险', '将这段内容准确翻译成英文',
+  '搜索最新资料并列出来源', '用三句话解释这个概念', '把表格数据整理成摘要',
+];
+
+function quickPromptsFor(id: string): string[] {
+  let seed = 0;
+  for (const char of id) seed = (seed * 31 + char.charCodeAt(0)) >>> 0;
+  const pool = [...QUICK_PROMPT_POOL];
+  const result: string[] = [];
+  while (result.length < 3 && pool.length) {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    result.push(...pool.splice(seed % pool.length, 1));
+  }
+  return result;
 }
 
 export interface GroupedCitation {
@@ -180,6 +200,7 @@ export function ChatView() {
   const profiles = useAppStore((state) => state.profiles);
   const settings = useAppStore((state) => state.settings);
   const appendMessage = useAppStore((state) => state.appendMessage);
+  const appendMessages = useAppStore((state) => state.appendMessages);
   const updateConversation = useAppStore((state) => state.updateConversation);
   const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
   const setAdminToken = useAppStore((state) => state.setAdminToken);
@@ -194,6 +215,8 @@ export function ChatView() {
   const [liveText, setLiveText] = useState('');
   const [liveReasoning, setLiveReasoning] = useState('');
   const [error, setError] = useState('');
+  const [errorDetails, setErrorDetails] = useState<string[]>([]);
+  const [pendingUser, setPendingUser] = useState<ChatMessage>();
   const [preview, setPreview] = useState<PromptPreview>();
   const [sentPromptPreview, setSentPromptPreview] = useState<ChatMessage>();
   const [replacement, setReplacement] = useState<string>();
@@ -207,6 +230,7 @@ export function ChatView() {
   const revealTextRef = useRef('');
   const revealFrameRef = useRef<number | undefined>(undefined);
   const clearReplacement = useCallback(() => setReplacement(undefined), []);
+  const quickPrompts = useMemo(() => quickPromptsFor(conversation?.id ?? ''), [conversation?.id]);
 
   const scrollToBottom = useCallback(() => {
     scrollFrameRef.current.forEach(cancelAnimationFrame);
@@ -244,7 +268,8 @@ export function ChatView() {
   const scheduleReveal = useCallback(() => {
     if (revealFrameRef.current !== undefined) return;
     const paint = () => {
-      const count = Math.min(4, revealQueueRef.current.length);
+      const queued = revealQueueRef.current.length;
+      const count = Math.min(queued, Math.max(12, Math.min(240, Math.ceil(queued / 7))));
       if (count) {
         revealTextRef.current += revealQueueRef.current.splice(0, count).join('');
         setLiveText(revealTextRef.current);
@@ -295,46 +320,51 @@ export function ChatView() {
     }
   };
 
-  const sendMessage = async (rawPrompt: string, attachments: ChatAttachment[] = [], skillIds: string[] = [], skipCache = false): Promise<void> => {
-    if (!conversation || !profile || busy) return;
+  const sendMessage = async (rawPrompt: string, attachments: ChatAttachment[] = [], skillIds: string[] = [], skipCache = false): Promise<boolean> => {
+    if (!conversation || !profile || busy) return false;
     if (rawPrompt.startsWith('Admin')) {
       try {
         setAdminToken(await loginAdmin(rawPrompt));
+        return true;
       } catch {
         setError('管理员凭据无效');
+        return false;
       }
-      return;
     }
     shouldFollowRef.current = true;
     scrollToBottom();
     setBusy(true);
     setError('');
+    setErrorDetails([]);
     setLiveText('');
     setLiveReasoning('');
     revealQueueRef.current = [];
     revealTextRef.current = '';
+    const autoSkillIds = settings.autoSkills ? autoSelectSkillIds(rawPrompt, attachments) : [];
+    const effectiveSkillIds = [...new Set([...skillIds, ...autoSkillIds])];
+    const transientUser = makeMessage('user', rawPrompt, attachments, effectiveSkillIds);
+    setPendingUser(transientUser);
     try {
-      const route = await chooseRoute(rawPrompt);
+      const assistContext = [memoryToPrompt(conversation.memory), ...conversation.messages.slice(-6).map((message) => `${message.role}: ${message.content}`)]
+        .filter(Boolean).join('\n').slice(-20_000);
+      const routePromise = chooseRoute(rawPrompt);
+      const retrievalPromise = settings.jitRetrieval ? retrieveKnowledge(rawPrompt, settings.retrievalTopK) : Promise.resolve([]);
+      const knowledgeLengthPromise = settings.jitRetrieval ? knowledgeCorpusTextLength() : Promise.resolve(0);
+      const cachePromptPromise = settings.semanticHitEnhancement
+        ? normalizeForSemanticCache(rawPrompt, assistContext).catch(() => rawPrompt)
+        : Promise.resolve(rawPrompt);
+      const skillsPromise = executePreflightSkills(effectiveSkillIds, rawPrompt, attachments);
+      const [route, retrieved, knowledgeTextLength, cachePrompt, skillRun] = await Promise.all([
+        routePromise, retrievalPromise, knowledgeLengthPromise, cachePromptPromise, skillsPromise,
+      ]);
       const apiKey = requiresUserApiKey(route.profile) ? await loadProviderSecret(route.profile.id) : '';
       if (requiresUserApiKey(route.profile) && !apiKey) {
         setSettingsOpen(true);
         throw new Error(`请先在设置中保存 ${route.profile.name} API Key`);
       }
-      let citations = settings.jitRetrieval
-        ? await retrieveKnowledge(rawPrompt, settings.retrievalTopK)
-        : [];
+      let citations = retrieved;
       const attachmentCitations = retrieveAttachmentText(attachments, rawPrompt, settings.retrievalTopK);
-      const knowledgeTextLength = settings.jitRetrieval ? await knowledgeCorpusTextLength() : 0;
       citations = [...attachmentCitations, ...citations].slice(0, 20);
-      const cachePrompt = settings.semanticHitEnhancement
-        ? await normalizeForSemanticCache(
-            rawPrompt,
-            [memoryToPrompt(conversation.memory), ...conversation.messages.slice(-6).map((message) => `${message.role}: ${message.content}`)]
-              .filter(Boolean)
-              .join('\n')
-              .slice(-20_000),
-          ).catch(() => rawPrompt)
-        : rawPrompt;
       const fingerprint = await conversationFingerprint(
         conversation,
         `${route.profile.kind}:${route.profile.model}`,
@@ -349,8 +379,7 @@ export function ChatView() {
           }));
           if (match.equivalent) {
             setCacheProposal({ prompt: rawPrompt, candidate, fingerprint, routeReason: route.reason });
-            setBusy(false);
-            return;
+            return true;
           }
         }
       }
@@ -382,29 +411,27 @@ export function ChatView() {
 
       const baseSystem = buildSystemPrompt(conversation.systemPrompt, settings);
       const clientContext = captureClientRuntimeContext();
-      const skillsPrompt = buildSkillsPrompt(skillIds);
+      const skillsPrompt = buildSkillsPrompt(skillRun.skillIds, skillRun.contextBlocks);
       const compactMemory = memoryToCompactPrompt(memory, settings.toonStructured);
-      const assistContext = [compactMemory, ...conversation.messages.slice(-6).map((message) => `${message.role}: ${message.content}`)]
+      const currentAssistContext = [compactMemory, ...conversation.messages.slice(-6).map((message) => `${message.role}: ${message.content}`)]
         .filter(Boolean).join('\n').slice(-20_000);
-      let auxiliaryReasoning = '';
-      let webBlock = '';
-      const imageBlocks: string[] = [];
-      if (settings.reasoningEnabled && !route.profile.capabilities.reasoning) {
-        auxiliaryReasoning = await reasonWithGlm(rawPrompt, assistContext);
-        setLiveReasoning(auxiliaryReasoning);
-      }
-      if (settings.webSearch && !route.profile.capabilities.webSearch) {
-        const searched = await searchWithGlm(rawPrompt);
-        webBlock = searched.text;
-        citations = [...searched.citations, ...citations].slice(0, 20);
-      }
-      if (!route.profile.capabilities.vision) {
-        for (const image of attachments.filter((attachment) => attachment.kind === 'image' && attachment.dataUrl)) {
-          const description = await understandImageWithGlm(rawPrompt, image.dataUrl!)
-            .catch((caught) => `图片理解失败：${caught instanceof Error ? caught.message : '智能视觉服务暂不可用'}`);
-          imageBlocks.push(`${image.name}：${description}`);
-        }
-      }
+      const reasoningPromise = settings.reasoningEnabled && !route.profile.capabilities.reasoning
+        ? reasonWithGlm(rawPrompt, currentAssistContext).catch(() => '')
+        : Promise.resolve('');
+      const searchPromise = settings.webSearch && !route.profile.capabilities.webSearch
+        ? searchWithGlm(rawPrompt).catch(() => ({ text: '', citations: [] }))
+        : Promise.resolve({ text: '', citations: [] as KnowledgeCitation[] });
+      const imagePromise = !route.profile.capabilities.vision
+        ? Promise.all(attachments.filter((attachment) => attachment.kind === 'image' && attachment.dataUrl).map(async (image) => {
+            const description = await understandImageWithGlm(rawPrompt, image.dataUrl!)
+              .catch((caught) => `图片理解失败：${caught instanceof Error ? caught.message : '智能视觉服务暂不可用'}`);
+            return `${image.name}：${description}`;
+          }))
+        : Promise.resolve([] as string[]);
+      const [auxiliaryReasoning, searched, imageBlocks] = await Promise.all([reasoningPromise, searchPromise, imagePromise]);
+      if (auxiliaryReasoning) setLiveReasoning(auxiliaryReasoning);
+      const webBlock = searched.text;
+      citations = [...searched.citations, ...citations].slice(0, 20);
       const referenceBlock = citations.length
         ? `即时检索资料（仅在相关时引用）：\n${citations
             .map((citation, index) => `[${index + 1}] ${citation.documentName}\n${citation.excerpt}`)
@@ -471,9 +498,8 @@ export function ChatView() {
         })),
       }));
 
-      const userMessage = makeMessage('user', rawPrompt, attachments, skillIds);
+      const userMessage = transientUser;
       userMessage.rawPrompt = optimized.optimized !== rawPrompt ? optimized.optimized : undefined;
-      await appendMessage(conversation.id, userMessage);
 
       let answer = '';
       let reasoning = '';
@@ -508,44 +534,50 @@ export function ChatView() {
         },
       );
       if (!answer.trim()) throw new Error('Provider 没有返回文本内容');
-      await new Promise<void>((resolve) => {
-        const started = performance.now();
-        const waitForPaint = () => {
-          if (!revealQueueRef.current.length || performance.now() - started > 1200) {
-            if (revealQueueRef.current.length) {
-              revealTextRef.current += revealQueueRef.current.splice(0).join('');
-              setLiveText(revealTextRef.current);
-            }
-            resolve();
-          } else requestAnimationFrame(waitForPaint);
-        };
-        waitForPaint();
-      });
+      if (revealFrameRef.current !== undefined) cancelAnimationFrame(revealFrameRef.current);
+      revealFrameRef.current = undefined;
+      revealQueueRef.current = [];
+      revealTextRef.current = answer;
+      setLiveText(answer);
       const assistantMessage = makeMessage('assistant', answer);
       assistantMessage.telemetry = usage;
       assistantMessage.reasoningContent = reasoning || auxiliaryReasoning || undefined;
       assistantMessage.reasoningSource = reasoning ? 'provider' : auxiliaryReasoning ? 'glm' : undefined;
       assistantMessage.routeReason = route.reason;
       assistantMessage.citations = responseCitations;
-      assistantMessage.artifacts = extractGeneratedArtifacts(answer, assistantMessage.id);
-      await appendMessage(conversation.id, assistantMessage);
+      const postflight = executePostflightSkills(skillRun.skillIds, answer, assistantMessage.id);
+      assistantMessage.artifacts = postflight.artifacts;
+      assistantMessage.skillExecutions = [...skillRun.executions, ...postflight.executions];
+      await appendMessages(conversation.id, [userMessage, assistantMessage]);
       if (assistantMessage.artifacts.length) setActiveArtifact(assistantMessage.artifacts[0].id);
       setLiveText('');
       setLiveReasoning('');
       if (settings.semanticCache) {
-        await saveCacheEntry({
+        void saveCacheEntry({
           conversationId: conversation.id,
           fingerprint,
           prompt: cachePrompt,
           answer,
         });
       }
+      if (conversation.messages.length === 0 && !conversation.titleGenerated) {
+        const fallbackTitle = rawPrompt.replace(/\s+/gu, ' ').trim().slice(0, 18) || '新对话';
+        void generateConversationTitle(`用户：${rawPrompt}\n助手：${answer.slice(0, 4_000)}`)
+          .catch(() => fallbackTitle)
+          .then((title) => updateConversation(conversation.id, { title: title || fallbackTitle, titleGenerated: true }));
+      }
+      return true;
     } catch (caught) {
       revealQueueRef.current = [];
       setError(caught instanceof Error ? caught.message : '发送失败');
+      if (caught instanceof ChatResponseError) {
+        setErrorDetails(caught.issues?.map((issue) => `${issue.path || 'request'}：${issue.message}`) ?? []);
+      }
       setLiveText('');
       setLiveReasoning('');
+      return false;
     } finally {
+      setPendingUser(undefined);
       setBusy(false);
     }
   };
@@ -602,7 +634,7 @@ export function ChatView() {
             <h1>把问题说短一点</h1>
             <p>StingyChat 会在发送前整理上下文，并把节省结果留在每条回复旁。</p>
             <div className="quick-prompts">
-              {['将这段需求整理为 JSON', '只给我可运行的代码', '从资料库中检索要点'].map((text) => (
+              {quickPrompts.map((text) => (
                 <button key={text} onClick={() => void sendMessage(text)}>{text}</button>
               ))}
             </div>
@@ -637,17 +669,25 @@ export function ChatView() {
                 ) : null}
                 {message.skillIds?.length ? <div className="message-skills">{message.skillIds.map((id) => <span key={id}>{skillName(id)}</span>)}</div> : null}
                 {message.citations?.length ? (
-                  <div className="citation-row">
-                    {groupCitations(message.citations).map((citation) => (
-                      <details key={citation.documentName}>
-                        <summary><FileText size={12} /> {citation.sourceType === 'web' ? '网页' : citation.sourceType === 'attachment' ? '附件' : '资料'} · {citation.documentName}{citation.chunkCount > 1 ? ` · ${citation.chunkCount} 段` : ''}</summary>
-                        <div>
+                  <details className="citation-group">
+                    <summary><FileText size={13} /> {groupCitations(message.citations).length} 个来源</summary>
+                    <div className="citation-list">
+                      {groupCitations(message.citations).map((citation) => (
+                        <section key={citation.documentName}>
+                          <b>{citation.sourceType === 'web' ? '网页' : citation.sourceType === 'attachment' ? '附件' : '资料'} · {citation.documentName}</b>
+                          {citation.chunkCount > 1 ? <small>{citation.chunkCount} 个相关片段</small> : null}
                           {citation.excerpts.map((excerpt) => <p key={excerpt}>{excerpt}</p>)}
                           {citation.url ? <a href={citation.url} target="_blank" rel="noreferrer">打开来源</a> : null}
-                        </div>
-                      </details>
-                    ))}
-                  </div>
+                        </section>
+                      ))}
+                    </div>
+                  </details>
+                ) : null}
+                {message.skillExecutions?.length ? (
+                  <details className="skill-executions">
+                    <summary><Sparkles size={13} /> Skills 执行 {message.skillExecutions.filter((item) => item.status === 'completed').length}/{message.skillExecutions.length}</summary>
+                    <div>{message.skillExecutions.map((item) => <p key={`${item.phase}:${item.id}`}><b>{item.name}</b><span>{item.summary}</span><small>{item.source} · {item.durationMs}ms</small></p>)}</div>
+                  </details>
                 ) : null}
                 <div className="message-meta">
                   {message.routeReason ? <span>{message.routeReason}</span> : null}
@@ -665,6 +705,12 @@ export function ChatView() {
             </motion.article>
           ))}
         </AnimatePresence>
+        {pendingUser ? (
+          <article className="message user is-pending" aria-label="正在发送的消息">
+            <div className="message-avatar"><User size={16} /></div>
+            <div className="message-body"><MarkdownContent>{pendingUser.content}</MarkdownContent><small className="pending-label">正在准备请求…</small></div>
+          </article>
+        ) : null}
         {liveText || liveReasoning ? (
           <article className="message assistant is-streaming">
             <div className="message-avatar"><Bot size={16} /></div>
@@ -682,11 +728,12 @@ export function ChatView() {
         {busy && !liveText && !liveReasoning ? (
           <div className="thinking-line"><LoaderCircle size={16} className="spin" /> 正在组织上下文</div>
         ) : null}
-        {error ? <div className="inline-error">{error}</div> : null}
+        {error ? <div className="inline-error"><b>{error}</b>{errorDetails.length ? <details><summary>查看不兼容字段</summary>{errorDetails.map((detail) => <p key={detail}>{detail}</p>)}</details> : null}<small>输入和附件仍保留在编辑框中，可修改后重试。</small></div> : null}
         </div>
       </div>
 
       <Composer
+        conversationId={conversation.id}
         profile={profile}
         busy={busy}
         onSend={sendMessage}

@@ -190,4 +190,6 @@ export const DEFAULT_SETTINGS: OptimizationSettings = {
   compressionThreshold: 0.72,
   fewShotExamples: [],
   pinModel: false,
+  autoSkills: true,
+  theme: 'system',
 };

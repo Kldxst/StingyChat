@@ -14,6 +14,7 @@ type CustomProtocol = 'openai-chat' | 'openai-responses';
 export type OutputContract = 'concise' | 'json' | 'code' | 'choice' | 'free';
 type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high';
 type MessageRole = 'user' | 'assistant' | 'system';
+export type ThemePreference = 'system' | 'light' | 'dark';
 
 export interface ProviderCapabilities {
   responses: boolean;
@@ -81,6 +82,16 @@ export interface GeneratedArtifact {
   content: string;
 }
 
+export interface SkillExecution {
+  id: string;
+  name: string;
+  source: string;
+  phase: 'preflight' | 'postflight';
+  status: 'completed' | 'failed';
+  summary: string;
+  durationMs: number;
+}
+
 export interface ClientRuntimeContext {
   nowIso: string;
   localTime: string;
@@ -102,6 +113,7 @@ export interface ChatMessage {
   reasoningSource?: 'provider' | 'glm';
   attachments?: ChatAttachment[];
   skillIds?: string[];
+  skillExecutions?: SkillExecution[];
   artifacts?: GeneratedArtifact[];
 }
 
@@ -114,6 +126,7 @@ export interface ConversationMemory {
   citations: string[];
   compressedThroughMessageId?: string;
   updatedAt: number;
+  titleGenerated?: boolean;
 }
 
 export interface Conversation {
@@ -125,6 +138,7 @@ export interface Conversation {
   providerProfileId: string;
   createdAt: number;
   updatedAt: number;
+  titleGenerated?: boolean;
 }
 
 interface FewShotExample {
@@ -161,6 +175,8 @@ export interface OptimizationSettings {
   simpleProfileId?: string;
   complexProfileId?: string;
   pinModel: boolean;
+  autoSkills: boolean;
+  theme: ThemePreference;
 }
 
 export interface KnowledgeDocument {

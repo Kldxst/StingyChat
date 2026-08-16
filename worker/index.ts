@@ -110,7 +110,11 @@ app.get('/api/assist/queue/:requestId', async (context) => {
 
 app.post('/api/chat/stream', async (context) => {
   const parsed = chatRequestSchema.safeParse(await context.req.json().catch(() => undefined));
-  if (!parsed.success) return context.json({ error: '聊天请求格式无效' }, 400);
+  if (!parsed.success) return context.json({
+    code: 'CHAT_REQUEST_INVALID',
+    error: '聊天请求包含不兼容字段，已保留输入，可直接重试',
+    issues: parsed.error.issues.slice(0, 6).map((issue) => ({ path: issue.path.join('.'), code: issue.code, message: issue.message })),
+  }, 400);
   const request = parsed.data as ChatRequest;
   const ip = requestIp(context);
   const restriction = await getRestriction(context.env, ip);
@@ -228,6 +232,20 @@ app.post('/api/assist/generate-system-prompt', async (context) => {
     parsed.data.text,
     0.2, options.personalApiKey, options.requestId, options.operation,
   ).catch(() => fallbackSystemPrompt(parsed.data.text));
+  return context.json({ text });
+});
+
+app.post('/api/assist/generate-title', async (context) => {
+  const parsed = assistTextSchema.safeParse(await context.req.json().catch(() => undefined));
+  if (!parsed.success) return context.json({ error: '标题生成请求格式无效' }, 400);
+  const options = internalGlmOptions(context, 'generate-conversation-title');
+  const fallback = parsed.data.text.replace(/\s+/gu, ' ').trim().slice(0, 18) || '新对话';
+  const text = await callGlm(
+    context.env,
+    '为一轮对话生成便于扫描的中文标题。概括具体任务或主题，不使用引号、句号、冒号、泛化词“咨询”或“问题”。长度 6 到 18 个汉字，只输出标题。',
+    parsed.data.text.slice(0, 12_000),
+    0.2, options.personalApiKey, options.requestId, options.operation,
+  ).then((value) => value.replace(/[\r\n"“”。，：:]/gu, '').trim().slice(0, 24) || fallback).catch(() => fallback);
   return context.json({ text });
 });
 

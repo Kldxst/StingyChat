@@ -9,6 +9,7 @@ import { skillName } from '../lib/skills';
 import { SkillPicker } from './SkillPicker';
 
 export function Composer({
+  conversationId,
   profile,
   busy,
   onSend,
@@ -16,9 +17,10 @@ export function Composer({
   replacement,
   onReplacementApplied,
 }: {
+  conversationId: string;
   profile: ProviderProfile;
   busy: boolean;
-  onSend: (text: string, attachments: ChatAttachment[], skillIds: string[]) => Promise<void>;
+  onSend: (text: string, attachments: ChatAttachment[], skillIds: string[]) => Promise<boolean>;
   onOptimize: (text: string) => Promise<void>;
   replacement?: string;
   onReplacementApplied?: () => void;
@@ -52,13 +54,25 @@ export function Composer({
     onReplacementApplied?.();
   }, [onReplacementApplied, replacement]);
 
+  useEffect(() => {
+    setText('');
+    setAttachments([]);
+    setSelectedSkillIds([]);
+    setSkillsOpen(false);
+    setAttachmentError('');
+    setComposerNotice('');
+  }, [conversationId]);
+
   const submit = async () => {
     const value = text.trim();
     if ((!value && !attachments.length) || busy) return;
-    setText('');
-    const outgoing = attachments;
-    setAttachments([]);
-    await onSend(value || '请分析附件。', outgoing, selectedSkillIds);
+    const success = await onSend(value || '请分析附件。', attachments, selectedSkillIds);
+    if (success) {
+      setText('');
+      setAttachments([]);
+      setSelectedSkillIds([]);
+      setComposerNotice('');
+    }
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -194,17 +208,17 @@ export function Composer({
               <BrainCircuit size={15} /> 思考
             </button>
             {settings.reasoningEnabled ? (
-              <select
-                className="reasoning-effort-inline"
-                aria-label="思考强度"
-                value={settings.reasoningEffort}
-                onChange={(event) => void updateSettings({ reasoningEffort: event.target.value as typeof settings.reasoningEffort })}
-              >
-                <option value="minimal">最低</option>
-                <option value="low">低</option>
-                <option value="medium">中</option>
-                <option value="high">高</option>
-              </select>
+              <div className="reasoning-effort-control" role="group" aria-label="思考强度">
+                {([['minimal', '最低'], ['low', '低'], ['medium', '中'], ['high', '高']] as const).map(([value, label]) => (
+                  <button
+                    type="button"
+                    key={value}
+                    className={settings.reasoningEffort === value ? 'active' : ''}
+                    aria-pressed={settings.reasoningEffort === value}
+                    onClick={() => void updateSettings({ reasoningEffort: value })}
+                  >{label}</button>
+                ))}
+              </div>
             ) : null}
             <button
               type="button"

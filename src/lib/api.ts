@@ -7,6 +7,7 @@ import type {
 import { consumeEventStream } from './sse';
 import { loadPersonalGlmSecret } from './crypto';
 import type { GlmQueueStatus, KnowledgeCitation } from '../types';
+import { sanitizeChatRequest } from './chatValidation';
 
 async function jsonRequest<T>(path: string, body: unknown, headers?: HeadersInit): Promise<T> {
   const response = await fetch(path, {
@@ -86,6 +87,7 @@ export async function streamChat(
     if (request.profile.kind === 'stingy' && !queued) {
       emitGlmStatus({ requestId, state: 'personal', operation: 'StingyChat', position: 0, queuedAt: Date.now(), estimatedWaitMs: 0 });
     }
+    const normalizedRequest = sanitizeChatRequest(request);
     const response = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: {
@@ -94,7 +96,7 @@ export async function streamChat(
         'x-glm-request-id': requestId,
         ...personalHeaders,
       },
-      body: JSON.stringify(request),
+      body: JSON.stringify(normalizedRequest),
       signal,
     });
     await consumeEventStream(response, onEvent);
@@ -114,6 +116,11 @@ export async function optimizeWithGlm(text: string): Promise<string> {
 
 export async function generateSystemPrompt(text: string): Promise<string> {
   const result = await glmJsonRequest<{ text: string }>('/api/assist/generate-system-prompt', { text }, '生成 System Prompt');
+  return result.text;
+}
+
+export async function generateConversationTitle(text: string): Promise<string> {
+  const result = await glmJsonRequest<{ text: string }>('/api/assist/generate-title', { text }, '生成对话标题');
   return result.text;
 }
 

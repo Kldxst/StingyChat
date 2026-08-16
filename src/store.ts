@@ -36,6 +36,53 @@ function createConversation(profileId = DEFAULT_PROFILES[0].id): Conversation {
   };
 }
 
+function normalizeProfile(profile: ProviderProfile): ProviderProfile {
+  return {
+    ...profile,
+    contextWindow: Number.isFinite(profile.contextWindow) ? Math.max(1_024, Math.round(profile.contextWindow)) : 128_000,
+    capabilities: {
+      responses: Boolean(profile.capabilities?.responses),
+      webSearch: Boolean(profile.capabilities?.webSearch),
+      reasoning: Boolean(profile.capabilities?.reasoning),
+      reasoningEffort: Boolean(profile.capabilities?.reasoningEffort),
+      promptCache: Boolean(profile.capabilities?.promptCache),
+      batch: Boolean(profile.capabilities?.batch),
+      structuredOutput: Boolean(profile.capabilities?.structuredOutput),
+      vision: Boolean(profile.capabilities?.vision),
+    },
+  };
+}
+
+function normalizeConversation(conversation: Conversation, fallbackProfileId: string): Conversation {
+  const now = Date.now();
+  const memory = conversation.memory ?? EMPTY_MEMORY;
+  return {
+    ...conversation,
+    id: String(conversation.id || crypto.randomUUID()),
+    title: String(conversation.title || '新对话').slice(0, 100),
+    messages: Array.isArray(conversation.messages) ? conversation.messages.flatMap((message) => (
+      message && ['user', 'assistant', 'system'].includes(message.role) && typeof message.content === 'string'
+        ? [{ ...message, id: String(message.id || crypto.randomUUID()), createdAt: Number(message.createdAt) || now }]
+        : []
+    )) : [],
+    memory: {
+      ...EMPTY_MEMORY,
+      ...memory,
+      facts: Array.isArray(memory.facts) ? memory.facts.map(String) : [],
+      preferences: Array.isArray(memory.preferences) ? memory.preferences.map(String) : [],
+      openTasks: Array.isArray(memory.openTasks) ? memory.openTasks.map(String) : [],
+      constraints: Array.isArray(memory.constraints) ? memory.constraints.map(String) : [],
+      citations: Array.isArray(memory.citations) ? memory.citations.map(String) : [],
+      updatedAt: Number(memory.updatedAt) || now,
+    },
+    systemPrompt: String(conversation.systemPrompt || '你是一个准确、直接的 AI 助手。'),
+    providerProfileId: String(conversation.providerProfileId || fallbackProfileId),
+    createdAt: Number(conversation.createdAt) || now,
+    updatedAt: Number(conversation.updatedAt) || now,
+    titleGenerated: Boolean(conversation.titleGenerated),
+  };
+}
+
 interface AppState {
   initialized: boolean;
   conversations: Conversation[];
@@ -57,6 +104,7 @@ interface AppState {
   deleteConversation: (id: string) => Promise<void>;
   updateConversation: (id: string, patch: Partial<Conversation>) => Promise<void>;
   appendMessage: (conversationId: string, message: ChatMessage) => Promise<void>;
+  appendMessages: (conversationId: string, messages: ChatMessage[]) => Promise<void>;
   updateSettings: (patch: Partial<OptimizationSettings>) => Promise<void>;
   toggleExtreme: (enabled: boolean) => Promise<void>;
   saveProfile: (profile: ProviderProfile) => Promise<void>;
@@ -100,10 +148,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       const stored = storedById.get(profile.id);
       return stored ? { ...profile, model: stored.model, hasEncryptedKey: stored.hasEncryptedKey } : profile;
     });
-    const customProfiles = storedProfiles.filter((profile) => !defaultIds.has(profile.id));
-    const profiles = [...nativeProfiles, ...customProfiles];
+    const customProfiles = storedProfiles.filter((profile) => !defaultIds.has(profile.id)).map(normalizeProfile);
+    const profiles = [...nativeProfiles.map(normalizeProfile), ...customProfiles];
     await db.profiles.bulkPut(nativeProfiles);
-    let conversations = storedConversations;
+    let conversations = storedConversations.map((conversation) => normalizeConversation(
+      conversation,
+      profiles.some((profile) => profile.id === conversation.providerProfileId) ? conversation.providerProfileId : profiles[0].id,
+    ));
     if (!conversations.length) {
       const conversation = createConversation(profiles[0].id);
       conversations = [conversation];
@@ -176,11 +227,26 @@ export const useAppStore = create<AppState>((set, get) => ({
   appendMessage: async (conversationId, message) => {
     const current = get().conversations.find((conversation) => conversation.id === conversationId);
     if (!current) return;
-    const firstUserMessage = current.messages.length === 0 && message.role === 'user';
     const updated: Conversation = {
       ...current,
-      title: firstUserMessage ? message.content.slice(0, 24) || '新对话' : current.title,
       messages: [...current.messages, message],
+      updatedAt: Date.now(),
+    };
+    await persistConversation(updated);
+    set((state) => ({
+      conversations: state.conversations
+        .map((conversation) => (conversation.id === conversationId ? updated : conversation))
+        .toSorted((a, b) => b.updatedAt - a.updatedAt),
+    }));
+  },
+
+  appendMessages: async (conversationId, messages) => {
+    if (!messages.length) return;
+    const current = get().conversations.find((conversation) => conversation.id === conversationId);
+    if (!current) return;
+    const updated: Conversation = {
+      ...current,
+      messages: [...current.messages, ...messages],
       updatedAt: Date.now(),
     };
     await persistConversation(updated);

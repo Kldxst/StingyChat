@@ -15,15 +15,23 @@ function extension(name: string): string {
   return name.split('.').pop()?.toLowerCase() ?? 'txt';
 }
 
-export function extractGeneratedArtifacts(markdown: string, sourceMessageId: string): GeneratedArtifact[] {
+const LANGUAGE_EXTENSIONS: Record<string, string> = {
+  bash: 'sh', c: 'c', cpp: 'cpp', css: 'css', csv: 'csv', html: 'html', javascript: 'js', js: 'js',
+  json: 'json', jsx: 'jsx', markdown: 'md', md: 'md', plaintext: 'txt', python: 'py', sh: 'sh',
+  svg: 'svg', text: 'txt', ts: 'ts', tsx: 'tsx', typescript: 'ts', xml: 'xml', yaml: 'yaml', yml: 'yml',
+};
+
+export function extractGeneratedArtifacts(markdown: string, sourceMessageId: string, inferUnnamed = false): GeneratedArtifact[] {
   const artifacts: GeneratedArtifact[] = [];
   const fence = /```([^\n`]*)\n([\s\S]*?)```/gu;
   for (const match of markdown.matchAll(fence)) {
     const info = match[1].trim();
     const content = match[2].replace(/\n$/u, '');
     const filename = info.match(/(?:^|\s)filename=(?:"([^"]+)"|'([^']+)'|([^\s]+))/iu);
-    if (!filename) continue;
-    const name = safeName(filename[1] ?? filename[2] ?? filename[3] ?? '');
+    const languageHint = info.split(/\s+/u)[0]?.toLowerCase() || 'text';
+    const inferred = inferUnnamed ? `generated-${artifacts.length + 1}.${LANGUAGE_EXTENSIONS[languageHint] ?? 'txt'}` : '';
+    if (!filename && !inferred) continue;
+    const name = safeName(filename ? (filename[1] ?? filename[2] ?? filename[3] ?? '') : inferred);
     if (!name || !name.includes('.')) continue;
     const language = info.split(/\s+/u)[0] || extension(name);
     artifacts.push({

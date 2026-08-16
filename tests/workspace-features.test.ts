@@ -5,6 +5,10 @@ import { captureClientRuntimeContext, runtimeContextPrompt } from '../src/lib/ru
 import { buildSkillsPrompt } from '../src/lib/skills';
 import { formatAdminTime, parseSqliteUtc } from '../src/lib/time';
 import { estimateAttachmentTokens } from '../src/lib/tokenLedger';
+import { autoSelectSkillIds, executePreflightSkills } from '../src/lib/skills';
+import { sanitizeChatRequest } from '../src/lib/chatValidation';
+import { DEFAULT_PROFILES, DEFAULT_SETTINGS } from '../src/config';
+import type { ChatRequest } from '../src/types';
 
 describe('workspace feature completion', () => {
   it('treats SQLite CURRENT_TIMESTAMP values as UTC', () => {
@@ -53,5 +57,35 @@ describe('workspace feature completion', () => {
     expect(prompt).toContain('[文件生成]');
     expect(prompt).toContain('[深度研究]');
     expect(prompt).not.toContain('unknown');
+  });
+
+  it('automatically selects and executes a package-backed calculator Skill', async () => {
+    expect(autoSelectSkillIds('请计算 2 + 3 * 4')).toContain('calculator');
+    const result = await executePreflightSkills(['calculator'], '请计算 2 + 3 * 4', []);
+    expect(result.contextBlocks.join('\n')).toContain('结果：14');
+    expect(result.executions[0]).toMatchObject({ id: 'calculator', status: 'completed' });
+  }, 15_000);
+
+  it('infers a downloadable filename when file generation returns an unnamed fence', () => {
+    expect(extractGeneratedArtifacts('```typescript\nexport const ok = true;\n```', 'message-2', true)[0])
+      .toMatchObject({ name: 'generated-1.ts', language: 'typescript' });
+  });
+
+  it('repairs legacy request enums and malformed optional URLs before sending', () => {
+    const legacy = {
+      conversationId: 'legacy',
+      profile: { ...DEFAULT_PROFILES[0], kind: 'removed-provider', baseUrl: 'not a url', protocol: 'legacy-protocol' },
+      messages: [{ role: 'legacy-role', content: 'hello' }],
+      systemPrompt: '',
+      settings: { ...DEFAULT_SETTINGS, theme: 'midnight', reasoningEffort: 'extreme', outputContract: 'xml' },
+      estimatedBaseline: -1,
+      estimatedSent: Number.NaN,
+      citations: [],
+    } as unknown as ChatRequest;
+    const repaired = sanitizeChatRequest(legacy);
+    expect(repaired.profile).toMatchObject({ kind: 'custom', protocol: 'openai-chat', baseUrl: undefined });
+    expect(repaired.messages[0].role).toBe('user');
+    expect(repaired.settings).toMatchObject({ theme: 'system', reasoningEffort: 'medium', outputContract: 'concise' });
+    expect(repaired.estimatedBaseline).toBe(0);
   });
 });

@@ -60,8 +60,9 @@ describe('chat scroll containment', () => {
     expect(css).toContain('.artifact-preview pre { flex: 1 1 auto; min-height: 0;');
   });
 
-  it('lets the Skills popup escape the rounded composer clipping region', () => {
-    expect(css).toContain('.composer:has(.skill-picker) { overflow: visible; }');
-    expect(css).toMatch(/\.skill-picker\s*\{[^}]*max-height:\s*min\(560px,\s*64dvh\)[^}]*overflow:\s*hidden/su);
+  it('renders the Skills picker in a viewport-bounded portal overlay', () => {
+    expect(css).toContain('.composer { overflow: hidden; }');
+    expect(css).toMatch(/\.skill-picker-backdrop\s*\{[^}]*position:\s*fixed/su);
+    expect(css).toMatch(/\.skill-picker\s*\{[^}]*max-height:\s*min\(680px,\s*calc\(100dvh - 36px\)\)[^}]*overflow:\s*hidden/su);
   });
 });

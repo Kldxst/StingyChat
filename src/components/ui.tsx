@@ -1,6 +1,10 @@
 import { X } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import { useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
+
+let bodyLockCount = 0;
+let previousBodyOverflow = '';
 
 export function IconButton({
   label,
@@ -54,7 +58,42 @@ export function Modal({
   onClose: () => void;
   wide?: boolean;
 }) {
-  return (
+  const dialogRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    if (bodyLockCount === 0) {
+      previousBodyOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+    }
+    bodyLockCount += 1;
+    const frame = requestAnimationFrame(() => dialogRef.current?.querySelector<HTMLElement>('button, [href], input, textarea, select, [tabindex]:not([tabindex="-1"])')?.focus());
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== 'Tab' || !dialogRef.current) return;
+      const focusable = [...dialogRef.current.querySelectorAll<HTMLElement>('button:not(:disabled), [href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])')];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener('keydown', handleKeyDown);
+      bodyLockCount = Math.max(0, bodyLockCount - 1);
+      if (bodyLockCount === 0) document.body.style.overflow = previousBodyOverflow;
+      previousFocus?.focus();
+    };
+  }, [onClose, open]);
+
+  if (typeof document === 'undefined') return null;
+  return createPortal(
     <AnimatePresence>
       {open ? (
         <motion.div
@@ -67,6 +106,7 @@ export function Modal({
           }}
         >
           <motion.section
+            ref={dialogRef}
             className={`modal ${wide ? 'modal-wide' : ''}`}
             role="dialog"
             aria-modal="true"
@@ -87,6 +127,7 @@ export function Modal({
         </motion.div>
       ) : null}
     </AnimatePresence>
+    , document.body
   );
 }
 
