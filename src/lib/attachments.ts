@@ -4,6 +4,7 @@ import { chunkText, extractFileText, tokenizeForSearch } from './knowledge';
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_ATTACHMENTS = 8;
+export const LONG_PASTE_CHAR_THRESHOLD = 6_000;
 
 function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -40,6 +41,26 @@ export async function prepareChatAttachments(files: File[]): Promise<ChatAttachm
   }));
 }
 
+export function createPastedTextAttachment(text: string, now = new Date()): ChatAttachment {
+  const stamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0'),
+    '-',
+    String(now.getHours()).padStart(2, '0'),
+    String(now.getMinutes()).padStart(2, '0'),
+    String(now.getSeconds()).padStart(2, '0'),
+  ].join('');
+  return {
+    id: crypto.randomUUID(),
+    name: `粘贴内容-${stamp}.txt`,
+    mimeType: 'text/plain',
+    size: new TextEncoder().encode(text).byteLength,
+    kind: 'document',
+    text,
+  };
+}
+
 export function retrieveAttachmentText(attachments: ChatAttachment[], query: string, topK: number): KnowledgeCitation[] {
   const queryTerms = new Set(tokenizeForSearch(query));
   return attachments
@@ -49,7 +70,6 @@ export function retrieveAttachmentText(attachments: ChatAttachment[], query: str
       const overlap = chunk.terms.reduce((total, term) => total + (queryTerms.has(term) ? 1 : 0), 0);
       return { chunk, score: overlap / Math.max(1, Math.sqrt(chunk.terms.length)) };
     })
-    .filter(({ score }) => score > 0)
     .toSorted((left, right) => right.score - left.score)
     .slice(0, topK)
     .map(({ chunk, score }) => ({

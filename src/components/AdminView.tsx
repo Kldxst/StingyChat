@@ -1,6 +1,7 @@
 import { Ban, LogOut, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { useAppStore } from '../store';
+import { formatAdminTime, parseSqliteUtc } from '../lib/time';
 
 interface ChatLog {
   id: number;
@@ -44,6 +45,7 @@ export function AdminView() {
   const [blockAssist, setBlockAssist] = useState(false);
   const [blockWebSearch, setBlockWebSearch] = useState(false);
   const [error, setError] = useState('');
+  const adminTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   const refresh = useCallback(async () => {
     if (!token) return;
@@ -66,7 +68,7 @@ export function AdminView() {
   return (
     <main className="workspace-view admin-view">
       <header className="admin-heading">
-        <div><ShieldCheck size={19} /><span><h1>管理控制台</h1><small>聊天审计与网络段限制</small></span></div>
+        <div><ShieldCheck size={19} /><span><h1>管理控制台</h1><small>聊天审计与网络段限制 · {adminTimeZone}</small></span></div>
         <div>
           <button className="secondary-button" onClick={() => void refresh()}><RefreshCw size={14} /> 刷新</button>
           <button className="secondary-button" onClick={() => setAdminToken(undefined)}><LogOut size={14} /> 退出</button>
@@ -97,7 +99,7 @@ export function AdminView() {
         <div className="chat-log-list">
           {chats.map((item) => (
             <details key={item.id}>
-              <summary><b>{item.model}</b><span>{item.ip}</span><time>{new Date(item.created_at).toLocaleString('zh-CN')}</time></summary>
+              <summary><b>{item.model}</b><span>{item.ip}</span><time dateTime={parseSqliteUtc(item.created_at).toISOString()}>{formatAdminTime(item.created_at, adminTimeZone)}</time></summary>
               <div><h3>请求</h3><pre>{JSON.stringify(JSON.parse(item.request_json), null, 2)}</pre><h3>回复</h3><pre>{item.response_text}</pre></div>
             </details>
           ))}

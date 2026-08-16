@@ -25,6 +25,7 @@ describe('Worker chat integration', () => {
       estimatedBaseline: 30,
       estimatedSent: 15,
       citations: [],
+      savings: { promptCompression: 5, contextPruning: 5, jitRetrieval: 10, semanticCache: 0, promptCache: 0 },
     };
     const response = await app.request('/api/chat/stream', {
       method: 'POST',
@@ -37,8 +38,29 @@ describe('Worker chat integration', () => {
     expect(text).toContain('"type":"reasoning_delta","text":"先分析"');
     expect(text).toContain('"cachedTokens":4');
     expect(text).toContain('"estimatedSaved":15');
+    expect(text).toContain('"estimatedGrossSaved":24');
+    expect(text).toContain('"optimizationOverhead":9');
     const upstreamBody = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as Record<string, unknown>;
     expect(upstreamBody.tools).toEqual([{ type: 'web_search' }]);
+  });
+
+  it('uses the configured GLM vision model for image understanding', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: '图片中有一张折线图' } }],
+    }), { headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const response = await app.request('/api/assist/understand-image', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: '描述图表', dataUrl: 'data:image/png;base64,aGVsbG8=' }),
+    }, {
+      GLM_BASE_URL: 'https://assistant.example/v1', GLM_MODEL: 'text-model', GLM_VISION_MODEL: 'vision-model', GLM_API_KEY: 'worker-only',
+      ASSETS: { fetch: vi.fn() } as never,
+    });
+    expect(response.status).toBe(200);
+    const upstreamBody = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as Record<string, unknown>;
+    expect(upstreamBody.model).toBe('vision-model');
+    expect(upstreamBody.messages).toMatchObject([{ role: 'system' }, { role: 'user', content: [{ type: 'text' }, { type: 'image_url' }] }]);
   });
 
   it('normalizes prompts for semantic cache lookup with the internal assistant', async () => {

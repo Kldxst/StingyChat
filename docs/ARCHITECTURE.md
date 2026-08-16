@@ -9,6 +9,8 @@
 5. Worker 以 Provider 对应协议转发并把上游流统一为 `meta`、`delta`、`reasoning_delta`、`usage`、`done`、`error` SSE 事件。
 6. 浏览器逐字呈现回答，保存 Provider usage、引用、路由理由和节省账本。
 
+浏览器还会把 ISO 时间、本地时间、IANA 时区、语言区域写入运行上下文；Worker 追加 Cloudflare 基于请求 IP 推断的城市、地区、国家和时区。该位置只用于改善地域相关回答，并明确标记为粗略推断。
+
 ## Token 基线
 
 账本的“原始基线”由原始 System Prompt、未优化提示词、完整可见历史、完整本地资料文本和附件文本估算构成。“实际发送”只包含最终 System Prompt、长期记忆、最近窗口与 Top-K 片段。节省值是这两个可见输入的估算差，不声称是无法观察的反事实账单。
@@ -30,6 +32,8 @@ OpenAI/xAI Responses、Anthropic Web Search、Gemini Google Search 和兼容的 
 ## 本地资料与附件
 
 TXT、Markdown、PDF、DOCX 在浏览器解析并分块。Dexie 保存文件元数据、文本块和索引，不上传原文件。发送时只把相关摘录放入 System Prompt。图片压缩后仅在最新消息且目标模型支持视觉时发送；否则 GLM 先生成描述/OCR，目标 Provider 不接收图片数据。
+
+超过 6,000 字的粘贴文本会直接转成临时 TXT 附件，并沿用同一分块与 Top-K 检索链路。Skills 是可组合、可审计的提示模块，输入 `$$` 打开选择器；它们不在浏览器中执行第三方代码。具名 Markdown 围栏会被解析为生成文件，右侧栏只展示明确包含 `filename="..."` 的内容，避免把普通代码块误判为下载文件。
 
 ## 安全边界
 

@@ -17,6 +17,8 @@ export function TokenInfo({ telemetry }: { telemetry: TokenTelemetry }) {
         <hr />
         <span><i>实际发送</i><b>{formatTokenCount(telemetry.estimatedSent)}</b></span>
         <span className="saved"><i>估算节省</i><b>-{formatTokenCount(telemetry.estimatedSaved)}</b></span>
+        {telemetry.estimatedGrossSaved !== undefined ? <span><i>优化毛节省</i><b>-{formatTokenCount(telemetry.estimatedGrossSaved)}</b></span> : null}
+        {telemetry.optimizationOverhead ? <span><i>优化附加成本</i><b>+{formatTokenCount(telemetry.optimizationOverhead)}</b></span> : null}
         {telemetry.savings ? (
           <span className="token-breakdown">
             <small>提示词 -{formatTokenCount(telemetry.savings.promptCompression)}</small>

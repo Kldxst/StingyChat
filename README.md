@@ -18,6 +18,9 @@ StingyChat 是运行在 Cloudflare Workers 上的 Token 优化 AI 聊天工作�
 - Token 账本区分 Provider 实际 usage 与本地估算，并显示提示词、历史、JIT、语义缓存和 Prompt Cache 分项。
 - OpenAI 与 Anthropic 批处理工作台；其他 Provider 按能力表明确禁用。
 - 桌面侧栏、移动抽屉、响应式模型选择器、玻璃组件及 `prefers-reduced-motion` 降级。
+- 浏览器时间、时区与 Cloudflare IP 粗略位置会注入每轮上下文，用于纠正日期和地域判断；粗略位置不视为精确定位。
+- 输入 `$$` 打开可组合 Skills 面板；长于 6,000 字的粘贴内容自动转为仅在浏览器处理的文本附件。
+- 模型按具名 Markdown 代码围栏协议（例如 `filename="app.ts"`）生成文件，右侧文件栏可审查、复制并下载；DOCX 在浏览器生成。
 
 ## 技术架构
 
@@ -48,6 +51,7 @@ npm run dev:worker
 GLM_API_KEY=
 FREE_GLM_API_KEY=
 GLM_FALLBACK_API_KEYS=[]
+GLM_VISION_MODEL=GLM-4.6V-Flash
 ADMIN_PASSWORD=
 ```
 

@@ -47,6 +47,8 @@ export interface TokenTelemetry {
   estimatedBaseline: number;
   estimatedSent: number;
   estimatedSaved: number;
+  estimatedGrossSaved?: number;
+  optimizationOverhead?: number;
   source: 'provider' | 'estimated';
   tokenizer?: 'provider' | 'tiktoken' | 'heuristic';
   savings?: TokenSavingsBreakdown;
@@ -70,6 +72,23 @@ export interface ChatAttachment {
   text?: string;
 }
 
+export interface GeneratedArtifact {
+  id: string;
+  sourceMessageId: string;
+  name: string;
+  language: string;
+  mimeType: string;
+  content: string;
+}
+
+export interface ClientRuntimeContext {
+  nowIso: string;
+  localTime: string;
+  timeZone: string;
+  locale: string;
+  utcOffsetMinutes: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: MessageRole;
@@ -82,6 +101,8 @@ export interface ChatMessage {
   reasoningContent?: string;
   reasoningSource?: 'provider' | 'glm';
   attachments?: ChatAttachment[];
+  skillIds?: string[];
+  artifacts?: GeneratedArtifact[];
 }
 
 export interface ConversationMemory {
@@ -181,6 +202,7 @@ export interface ChatRequest {
   citations: KnowledgeCitation[];
   savings?: TokenSavingsBreakdown;
   tokenizer?: 'tiktoken' | 'heuristic';
+  clientContext?: ClientRuntimeContext;
 }
 
 export interface GlmQueueStatus {

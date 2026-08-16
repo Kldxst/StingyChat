@@ -34,6 +34,10 @@ import {
   saveCacheEntry,
 } from '../lib/semantic';
 import { estimateMessages, estimateTokens, estimateTokensForModel } from '../lib/tokens';
+import { estimateAttachmentTokens } from '../lib/tokenLedger';
+import { buildSkillsPrompt, skillName } from '../lib/skills';
+import { extractGeneratedArtifacts } from '../lib/artifacts';
+import { captureClientRuntimeContext, runtimeContextPrompt } from '../lib/runtimeContext';
 import { requiresUserApiKey } from '../lib/providerAuth';
 import { useAppStore } from '../store';
 import type {
@@ -92,8 +96,8 @@ export function groupCitations(citations: KnowledgeCitation[]): GroupedCitation[
   return [...groups.values()].toSorted((a, b) => b.bestScore - a.bestScore);
 }
 
-function makeMessage(role: 'user' | 'assistant', content: string, attachments?: ChatAttachment[]): ChatMessage {
-  return { id: crypto.randomUUID(), role, content, createdAt: Date.now(), attachments };
+function makeMessage(role: 'user' | 'assistant', content: string, attachments?: ChatAttachment[], skillIds?: string[]): ChatMessage {
+  return { id: crypto.randomUUID(), role, content, createdAt: Date.now(), attachments, skillIds };
 }
 
 function textFromNode(node: ReactNode): string {
@@ -179,6 +183,7 @@ export function ChatView() {
   const updateConversation = useAppStore((state) => state.updateConversation);
   const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
   const setAdminToken = useAppStore((state) => state.setAdminToken);
+  const setActiveArtifact = useAppStore((state) => state.setActiveArtifact);
   const conversation = useMemo(
     () => conversations.find((item) => item.id === activeId),
     [activeId, conversations],
@@ -290,7 +295,7 @@ export function ChatView() {
     }
   };
 
-  const sendMessage = async (rawPrompt: string, attachments: ChatAttachment[] = [], skipCache = false): Promise<void> => {
+  const sendMessage = async (rawPrompt: string, attachments: ChatAttachment[] = [], skillIds: string[] = [], skipCache = false): Promise<void> => {
     if (!conversation || !profile || busy) return;
     if (rawPrompt.startsWith('Admin')) {
       try {
@@ -376,6 +381,8 @@ export function ChatView() {
       }
 
       const baseSystem = buildSystemPrompt(conversation.systemPrompt, settings);
+      const clientContext = captureClientRuntimeContext();
+      const skillsPrompt = buildSkillsPrompt(skillIds);
       const compactMemory = memoryToCompactPrompt(memory, settings.toonStructured);
       const assistContext = [compactMemory, ...conversation.messages.slice(-6).map((message) => `${message.role}: ${message.content}`)]
         .filter(Boolean).join('\n').slice(-20_000);
@@ -393,7 +400,9 @@ export function ChatView() {
       }
       if (!route.profile.capabilities.vision) {
         for (const image of attachments.filter((attachment) => attachment.kind === 'image' && attachment.dataUrl)) {
-          imageBlocks.push(`${image.name}：${await understandImageWithGlm(rawPrompt, image.dataUrl!)}`);
+          const description = await understandImageWithGlm(rawPrompt, image.dataUrl!)
+            .catch((caught) => `图片理解失败：${caught instanceof Error ? caught.message : '智能视觉服务暂不可用'}`);
+          imageBlocks.push(`${image.name}：${description}`);
         }
       }
       const referenceBlock = citations.length
@@ -403,6 +412,8 @@ export function ChatView() {
         : '';
       const systemPrompt = [
         baseSystem,
+        runtimeContextPrompt(clientContext),
+        skillsPrompt,
         compactMemory,
         auxiliaryReasoning ? `辅助推演（GLM 生成的可公开规划，不是目标模型私有思维链）：\n${auxiliaryReasoning}` : '',
         webBlock ? `实时联网搜索摘要（回答时引用下面的来源）：\n${webBlock}` : '',
@@ -416,22 +427,29 @@ export function ChatView() {
         route.profile.contextWindow,
         settings.compressionThreshold,
       );
-      const fullAttachmentTokens = attachments.reduce((total, attachment) => total + estimateTokens(attachment.text ?? ''), 0);
+      const rawAttachments = rawHistory.flatMap((message) => message.attachments ?? []);
+      const fullAttachmentTokens = estimateAttachmentTokens(rawAttachments);
       const fullKnowledgeTokens = Math.ceil(knowledgeTextLength / 3);
       const baselineText = [conversation.systemPrompt, ...rawHistory.map((message) => `${message.role}: ${message.content}`)].join('\n');
       const sentText = [systemPrompt, ...selection.messages.map((message) => `${message.role}: ${message.content}`)].join('\n');
-      const [baselineEstimate, sentEstimate] = await Promise.all([
+      const [baselineEstimate, sentEstimate, rawPromptEstimate, optimizedPromptEstimate] = await Promise.all([
         estimateTokensForModel(baselineText, route.profile.model),
         estimateTokensForModel(sentText, route.profile.model),
+        estimateTokensForModel(rawPrompt, route.profile.model),
+        estimateTokensForModel(optimized.optimized, route.profile.model),
       ]);
       const baseline = baselineEstimate.tokens + fullAttachmentTokens + fullKnowledgeTokens;
-      const sent = sentEstimate.tokens;
+      const nativeImageTokens = route.profile.capabilities.vision
+        ? estimateAttachmentTokens(attachments.filter((attachment) => attachment.kind === 'image'))
+        : 0;
+      const sent = sentEstimate.tokens + nativeImageTokens;
       const fullOptimizedHistory = estimateMessages(historyForSend);
-      const sentAttachmentTokens = attachmentCitations.reduce((total, citation) => total + estimateTokens(citation.excerpt), 0);
+      const injectedRetrievalTokens = citations.reduce((total, citation) => total + estimateTokens(citation.excerpt), 0);
+      const currentDocumentTokens = estimateAttachmentTokens(attachments.filter((attachment) => attachment.kind === 'document'));
       const savings = {
-        promptCompression: optimized.saved,
+        promptCompression: Math.max(0, rawPromptEstimate.tokens - optimizedPromptEstimate.tokens),
         contextPruning: Math.max(0, fullOptimizedHistory - estimateMessages(selection.messages)),
-        jitRetrieval: Math.max(0, fullAttachmentTokens + fullKnowledgeTokens - sentAttachmentTokens),
+        jitRetrieval: Math.max(0, currentDocumentTokens + fullKnowledgeTokens - injectedRetrievalTokens),
         semanticCache: 0,
         promptCache: 0,
       };
@@ -453,7 +471,7 @@ export function ChatView() {
         })),
       }));
 
-      const userMessage = makeMessage('user', rawPrompt, attachments);
+      const userMessage = makeMessage('user', rawPrompt, attachments, skillIds);
       userMessage.rawPrompt = optimized.optimized !== rawPrompt ? optimized.optimized : undefined;
       await appendMessage(conversation.id, userMessage);
 
@@ -473,6 +491,7 @@ export function ChatView() {
           citations,
           savings,
           tokenizer: sentEstimate.source,
+          clientContext,
         },
         apiKey ?? '',
         (event) => {
@@ -508,7 +527,9 @@ export function ChatView() {
       assistantMessage.reasoningSource = reasoning ? 'provider' : auxiliaryReasoning ? 'glm' : undefined;
       assistantMessage.routeReason = route.reason;
       assistantMessage.citations = responseCitations;
+      assistantMessage.artifacts = extractGeneratedArtifacts(answer, assistantMessage.id);
       await appendMessage(conversation.id, assistantMessage);
+      if (assistantMessage.artifacts.length) setActiveArtifact(assistantMessage.artifacts[0].id);
       setLiveText('');
       setLiveReasoning('');
       if (settings.semanticCache) {
@@ -545,6 +566,8 @@ export function ChatView() {
       estimatedBaseline: estimate,
       estimatedSent: 0,
       estimatedSaved: estimate,
+      estimatedGrossSaved: estimate,
+      optimizationOverhead: 0,
       source: 'estimated',
       tokenizer: 'heuristic',
       savings: { promptCompression: 0, contextPruning: 0, jitRetrieval: 0, semanticCache: estimate, promptCache: 0 },
@@ -612,6 +635,7 @@ export function ChatView() {
                       : <span key={attachment.id}><FileText size={13} /> {attachment.name}</span>)}
                   </div>
                 ) : null}
+                {message.skillIds?.length ? <div className="message-skills">{message.skillIds.map((id) => <span key={id}>{skillName(id)}</span>)}</div> : null}
                 {message.citations?.length ? (
                   <div className="citation-row">
                     {groupCitations(message.citations).map((citation) => (
@@ -729,7 +753,7 @@ export function ChatView() {
                 onClick={() => {
                   const prompt = cacheProposal.prompt;
                   setCacheProposal(undefined);
-                  void sendMessage(prompt, [], true);
+                  void sendMessage(prompt, [], [], true);
                 }}
               >
                 <RotateCcw size={14} /> 重新生成

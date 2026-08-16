@@ -1,10 +1,11 @@
-import { Menu, Settings2, Zap } from 'lucide-react';
+import { Files, Menu, Settings2, Zap } from 'lucide-react';
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ModelPicker } from './components/ModelPicker';
 import { IconButton } from './components/ui';
 import { GlmQueueNotice } from './components/GlmQueueNotice';
 import { StarPrompt } from './components/StarPrompt';
+import { ArtifactPanel } from './components/ArtifactPanel';
 import { useAppStore } from './store';
 
 const ChatView = lazy(() => import('./components/ChatView').then((module) => ({ default: module.ChatView })));
@@ -23,8 +24,11 @@ export default function App() {
   const activeId = useAppStore((state) => state.activeConversationId);
   const settings = useAppStore((state) => state.settings);
   const settingsOpen = useAppStore((state) => state.settingsOpen);
+  const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
+  const artifactPanelOpen = useAppStore((state) => state.artifactPanelOpen);
   const setSidebarOpen = useAppStore((state) => state.setSidebarOpen);
   const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
+  const setArtifactPanelOpen = useAppStore((state) => state.setArtifactPanelOpen);
   const conversation = conversations.find((item) => item.id === activeId);
   const profile = profiles.find((item) => item.id === conversation?.providerProfileId) ?? profiles[0];
 
@@ -41,7 +45,7 @@ export default function App() {
   const pageTitle = view === 'chat' ? conversation.title : view === 'knowledge' ? '资料库' : view === 'batch' ? '批处理工作台' : '管理员后台';
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${sidebarCollapsed ? 'sidebar-is-collapsed' : ''} ${artifactPanelOpen ? 'artifact-is-open' : ''}`}>
       <Sidebar />
       <section className="main-column" ref={mainColumnRef}>
         <header className="topbar">
@@ -54,6 +58,7 @@ export default function App() {
           ) : <strong className="workspace-title">{pageTitle}</strong>}
           <div className="topbar-actions">
             {settings.extremeMode ? <span className="extreme-badge"><Zap size={13} /> 极省</span> : null}
+            <IconButton label="打开生成文件" onClick={() => setArtifactPanelOpen(true)}><Files size={18} /></IconButton>
             <IconButton label="打开设置" onClick={() => setSettingsOpen(true)}><Settings2 size={18} /></IconButton>
           </div>
         </header>
@@ -61,6 +66,7 @@ export default function App() {
           {view === 'chat' ? <ChatView /> : view === 'knowledge' ? <KnowledgeView /> : view === 'batch' ? <BatchView /> : <AdminView />}
         </Suspense>
       </section>
+      <ArtifactPanel />
       {settingsOpen ? <Suspense fallback={null}><SettingsDrawer /></Suspense> : null}
       <GlmQueueNotice />
       <StarPrompt initialized={initialized} conversations={conversations} />

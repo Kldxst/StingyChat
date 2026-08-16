@@ -5,6 +5,7 @@ import {
   Github,
   MessageSquare,
   PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   Search,
   Settings2,
@@ -23,12 +24,14 @@ export function Sidebar() {
   const activeId = useAppStore((state) => state.activeConversationId);
   const view = useAppStore((state) => state.view);
   const sidebarOpen = useAppStore((state) => state.sidebarOpen);
+  const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
   const adminToken = useAppStore((state) => state.adminToken);
   const createConversation = useAppStore((state) => state.createConversation);
   const selectConversation = useAppStore((state) => state.selectConversation);
   const deleteConversation = useAppStore((state) => state.deleteConversation);
   const setView = useAppStore((state) => state.setView);
   const setSidebarOpen = useAppStore((state) => state.setSidebarOpen);
+  const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
   const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
   const [query, setQuery] = useState('');
   const visibleConversations = useMemo(
@@ -43,12 +46,15 @@ export function Sidebar() {
         onClick={() => setSidebarOpen(false)}
         aria-label="关闭导航"
       />
-      <aside className={`sidebar ${sidebarOpen ? 'is-open' : ''}`}>
+      <aside className={`sidebar ${sidebarOpen ? 'is-open' : ''} ${sidebarCollapsed ? 'is-collapsed' : ''}`}>
         <div className="brand-row">
           <div className="brand-mark"><Bot size={19} /></div>
           <span><strong>StingyChat</strong><small>更少 Token，更长对话</small></span>
           <IconButton label="收起导航" className="mobile-only" onClick={() => setSidebarOpen(false)}>
             <PanelLeftClose size={18} />
+          </IconButton>
+          <IconButton label={sidebarCollapsed ? '展开侧栏' : '收起侧栏'} className="desktop-only sidebar-collapse" onClick={() => setSidebarCollapsed(!sidebarCollapsed)}>
+            {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
           </IconButton>
         </div>
 
@@ -90,6 +96,7 @@ export function Sidebar() {
               transition={{ delay: Math.min(index * 0.025, 0.18) }}
             >
               <button onClick={() => selectConversation(conversation.id)}>
+                <MessageSquare className="conversation-icon" size={15} />
                 <span>{conversation.title}</span>
                 <small>{new Date(conversation.updatedAt).toLocaleDateString('zh-CN')}</small>
               </button>

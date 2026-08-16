@@ -43,6 +43,8 @@ npx wrangler secret put GLM_FALLBACK_API_KEYS
 npx wrangler secret put ADMIN_PASSWORD
 ```
 
+非敏感的 `GLM_VISION_MODEL` 默认是 `GLM-4.6V-Flash`，用于目标模型不支持图片时的描述/OCR 回退。上线前应按智谱当前模型目录确认该名称在部署账户可用；若不同，在 `wrangler.jsonc` 或本地 `.dev.vars` 中覆盖。
+
 备用 Key 的输入是 JSON，例如：
 
 ```json

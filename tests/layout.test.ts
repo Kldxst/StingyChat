@@ -52,4 +52,16 @@ describe('chat scroll containment', () => {
     expect(app).toContain('workspace.scrollTop = 0');
     expect(app).toContain('}, [view]);');
   });
+
+  it('supports a collapsible left rail and a contained artifact inspector', () => {
+    expect(css).toContain('.app-shell.sidebar-is-collapsed { --sidebar: 72px; }');
+    expect(css).toMatch(/\.app-shell\.artifact-is-open\s*\{[^}]*grid-template-columns:\s*var\(--sidebar\)\s+minmax\(0,\s*1fr\)\s+clamp\(/su);
+    expect(css).toMatch(/@media \(max-width:\s*820px\)[\s\S]*\.app-shell\.artifact-is-open\s*\{[^}]*grid-template-columns:\s*minmax\(0,1fr\)/su);
+    expect(css).toContain('.artifact-preview pre { flex: 1 1 auto; min-height: 0;');
+  });
+
+  it('lets the Skills popup escape the rounded composer clipping region', () => {
+    expect(css).toContain('.composer:has(.skill-picker) { overflow: visible; }');
+    expect(css).toMatch(/\.skill-picker\s*\{[^}]*max-height:\s*min\(560px,\s*64dvh\)[^}]*overflow:\s*hidden/su);
+  });
 });

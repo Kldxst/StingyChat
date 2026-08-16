@@ -108,6 +108,13 @@ export const chatRequestSchema = z.object({
     promptCache: z.number().int().nonnegative(),
   }).optional(),
   tokenizer: z.enum(['tiktoken', 'heuristic']).optional(),
+  clientContext: z.object({
+    nowIso: z.string().datetime(),
+    localTime: z.string().min(1).max(200),
+    timeZone: z.string().min(1).max(100),
+    locale: z.string().min(1).max(50),
+    utcOffsetMinutes: z.number().int().min(-840).max(840),
+  }).optional(),
 });
 
 export const assistTextSchema = z.object({

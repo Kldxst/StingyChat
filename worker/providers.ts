@@ -28,6 +28,14 @@ function telemetry(
   cached = 0,
   actual = true,
 ): TokenTelemetry {
+  const savings = {
+    promptCompression: request.savings?.promptCompression ?? 0,
+    contextPruning: request.savings?.contextPruning ?? 0,
+    jitRetrieval: request.savings?.jitRetrieval ?? 0,
+    semanticCache: request.savings?.semanticCache ?? 0,
+    promptCache: cached,
+  };
+  const grossSaved = Object.values(savings).reduce((total, value) => total + value, 0);
   return {
     inputTokens: input,
     outputTokens: output,
@@ -37,15 +45,11 @@ function telemetry(
     estimatedBaseline: request.estimatedBaseline,
     estimatedSent: request.estimatedSent,
     estimatedSaved: Math.max(0, request.estimatedBaseline - request.estimatedSent),
+    estimatedGrossSaved: grossSaved,
+    optimizationOverhead: Math.max(0, request.estimatedSent - Math.max(0, request.estimatedBaseline - grossSaved)),
     source: actual ? 'provider' : 'estimated',
     tokenizer: actual ? 'provider' : request.tokenizer ?? 'heuristic',
-    savings: {
-      promptCompression: request.savings?.promptCompression ?? 0,
-      contextPruning: request.savings?.contextPruning ?? 0,
-      jitRetrieval: request.savings?.jitRetrieval ?? 0,
-      semanticCache: request.savings?.semanticCache ?? 0,
-      promptCache: cached,
-    },
+    savings,
   };
 }
 

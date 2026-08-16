@@ -30,6 +30,24 @@ describe('provider request mapping', () => {
     expect(body.reasoning).toEqual({ effort: 'medium' });
   });
 
+  it('maps images to native OpenAI-compatible vision content blocks', () => {
+    const profile: ProviderProfile = { ...openai, capabilities: { ...openai.capabilities, responses: false, vision: true } };
+    const config = createProviderConfig({
+      ...request(profile),
+      messages: [{
+        role: 'user',
+        content: '描述图片',
+        attachments: [{ id: 'image-1', name: 'sample.png', mimeType: 'image/png', size: 1200, kind: 'image', dataUrl: 'data:image/png;base64,aGVsbG8=' }],
+      }],
+      settings: { ...DEFAULT_SETTINGS, webSearch: false },
+    }, 'secret');
+    const body = JSON.parse(String(config.init.body)) as { messages: Array<{ content: Array<Record<string, unknown>> }> };
+    expect(body.messages[1].content).toMatchObject([
+      { type: 'text', text: '描述图片' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } },
+    ]);
+  });
+
   it('normalizes OpenAI Responses URL citations', () => {
     const config = createProviderConfig(request(), 'secret');
     expect(config.parse({

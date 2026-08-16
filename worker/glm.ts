@@ -4,6 +4,7 @@ export interface WorkerEnv {
   GLM_FALLBACK_API_KEYS?: string;
   GLM_BASE_URL: string;
   GLM_MODEL: string;
+  GLM_VISION_MODEL?: string;
   FREE_GLM_API_KEY?: string;
   FREE_GLM_BASE_URL?: string;
   FREE_GLM_MODEL?: string;

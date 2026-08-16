@@ -46,6 +46,9 @@ interface AppState {
   beforeExtreme?: OptimizationSettings;
   view: WorkspaceView;
   sidebarOpen: boolean;
+  sidebarCollapsed: boolean;
+  artifactPanelOpen: boolean;
+  activeArtifactId?: string;
   settingsOpen: boolean;
   adminToken?: string;
   initialize: () => Promise<void>;
@@ -59,6 +62,9 @@ interface AppState {
   saveProfile: (profile: ProviderProfile) => Promise<void>;
   setView: (view: WorkspaceView) => void;
   setSidebarOpen: (open: boolean) => void;
+  setSidebarCollapsed: (collapsed: boolean) => void;
+  setArtifactPanelOpen: (open: boolean) => void;
+  setActiveArtifact: (id?: string) => void;
   setSettingsOpen: (open: boolean) => void;
   setAdminToken: (token?: string) => void;
 }
@@ -76,6 +82,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   settings: DEFAULT_SETTINGS,
   view: 'chat',
   sidebarOpen: false,
+  sidebarCollapsed: typeof localStorage === 'undefined' ? false : localStorage.getItem('stingy-sidebar-collapsed') === 'true',
+  artifactPanelOpen: false,
   settingsOpen: false,
   adminToken: typeof sessionStorage === 'undefined' ? undefined : sessionStorage.getItem('stingy-admin-token') ?? undefined,
 
@@ -213,6 +221,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setView: (view) => set({ view, sidebarOpen: false }),
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
+  setSidebarCollapsed: (sidebarCollapsed) => {
+    if (typeof localStorage !== 'undefined') localStorage.setItem('stingy-sidebar-collapsed', String(sidebarCollapsed));
+    set({ sidebarCollapsed });
+  },
+  setArtifactPanelOpen: (artifactPanelOpen) => set({ artifactPanelOpen }),
+  setActiveArtifact: (activeArtifactId) => set({ activeArtifactId, artifactPanelOpen: Boolean(activeArtifactId) }),
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
   setAdminToken: (adminToken) => {
     if (typeof sessionStorage !== 'undefined') {

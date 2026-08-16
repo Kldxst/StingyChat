@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { z } from 'zod';
 import type { ChatRequest, ConversationMemory } from '../src/types';
 import { getBatchResults, getBatchStatus, submitBatch } from './batch';
@@ -34,6 +35,34 @@ import {
 
 const app = new Hono<{ Bindings: WorkerEnv }>();
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
+
+function networkRuntimePrompt(context: Context<{ Bindings: WorkerEnv }>): string {
+  const cf = context.req.raw.cf as {
+    country?: string;
+    region?: string;
+    city?: string;
+    timezone?: string;
+    latitude?: string;
+    longitude?: string;
+  } | undefined;
+  if (!cf) return '';
+  const location = [cf.city, cf.region, cf.country].filter(Boolean).join('，');
+  return [
+    'Cloudflare 请求上下文（仅为 IP 推断的粗略位置，不是精确地址）：',
+    location ? `- 大致位置：${location}` : '',
+    cf.timezone ? `- Cloudflare 推断时区：${cf.timezone}` : '',
+    cf.latitude && cf.longitude ? `- 大致坐标：${cf.latitude}, ${cf.longitude}` : '',
+    '- 涉及本地法规、天气或附近地点时，应说明位置是粗略推断，并在必要时向用户确认。',
+  ].filter(Boolean).join('\n');
+}
+
+export function enrichChatRequestWithNetworkContext(
+  context: Context<{ Bindings: WorkerEnv }>,
+  request: ChatRequest,
+): ChatRequest {
+  const network = networkRuntimePrompt(context);
+  return network ? { ...request, systemPrompt: `${request.systemPrompt}\n\n${network}` } : request;
+}
 
 export function auditMessages(messages: ChatRequest['messages']) {
   return messages.map((message) => ({
@@ -87,29 +116,29 @@ app.post('/api/chat/stream', async (context) => {
   const restriction = await getRestriction(context.env, ip);
   if (restriction?.block_chat) return context.json({ error: '当前网络段已被管理员限制聊天功能' }, 403);
   if (restriction?.block_web_search) request.settings = { ...request.settings, webSearch: false };
+  if (request.profile.kind === 'stingy') {
+    request.profile = { ...request.profile, model: context.env.FREE_GLM_MODEL ?? 'GLM-4.5-Flash' };
+  }
+  const providerRequest = enrichChatRequestWithNetworkContext(context, request);
   let response: Response;
   if (request.profile.kind === 'stingy') {
     const options = internalGlmOptions(context, 'stingy-chat');
-    request.profile = {
-      ...request.profile,
-      model: context.env.FREE_GLM_MODEL ?? 'GLM-4.5-Flash',
-    };
     if (options.personalApiKey) {
-      response = await streamProvider(request, options.personalApiKey, context.env.FREE_GLM_BASE_URL ?? context.env.GLM_BASE_URL);
+      response = await streamProvider(providerRequest, options.personalApiKey, context.env.FREE_GLM_BASE_URL ?? context.env.GLM_BASE_URL);
     } else if (context.env.GLM_SCHEDULER) {
       const stub = context.env.GLM_SCHEDULER.get(context.env.GLM_SCHEDULER.idFromName('global'));
       response = await stub.fetch('https://glm-scheduler/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ requestId: options.requestId, operation: options.operation, request }),
+        body: JSON.stringify({ requestId: options.requestId, operation: options.operation, request: providerRequest }),
       });
     } else {
       if (!context.env.FREE_GLM_API_KEY) return context.json({ error: '免费模型暂时不可用' }, 503);
-      response = await streamProvider(request, context.env.FREE_GLM_API_KEY, context.env.FREE_GLM_BASE_URL);
+      response = await streamProvider(providerRequest, context.env.FREE_GLM_API_KEY, context.env.FREE_GLM_BASE_URL);
     }
   } else {
     const apiKey = context.req.header('x-provider-api-key') ?? '';
-    response = await streamProvider(request, apiKey);
+    response = await streamProvider(providerRequest, apiKey);
   }
   if (!context.env.ADMIN_DB || !response.body) return response;
   const [clientBody, auditBody] = response.body.tee();
@@ -322,6 +351,7 @@ app.post('/api/assist/understand-image', async (context) => {
     system: '准确描述图片中与用户任务相关的内容，并提取可见文字。不要猜测不可见信息，输出适合交给另一个模型继续处理的紧凑说明。',
     user: parsed.data.text || '描述图片并提取可见文字。',
     imageDataUrl: parsed.data.dataUrl,
+    model: context.env.GLM_VISION_MODEL ?? 'GLM-4.6V-Flash',
     temperature: 0.1,
   }, options.personalApiKey);
   return context.json({ text: result.content });

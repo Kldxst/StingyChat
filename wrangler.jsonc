@@ -32,6 +32,7 @@
   "vars": {
     "GLM_BASE_URL": "https://open.bigmodel.cn/api/paas/v4",
     "GLM_MODEL": "GLM-4.7-Flash",
+    "GLM_VISION_MODEL": "GLM-4.6V-Flash",
     "FREE_GLM_BASE_URL": "https://open.bigmodel.cn/api/paas/v4",
     "FREE_GLM_MODEL": "GLM-4.5-Flash"
   }

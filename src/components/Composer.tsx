@@ -1,10 +1,12 @@
-import { ArrowUp, BrainCircuit, FileText, Globe2, LoaderCircle, Paperclip, Sparkles, X } from 'lucide-react';
-import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from 'react';
+import { ArrowUp, BrainCircuit, FileCode2, FileText, Globe2, LoaderCircle, Paperclip, Sparkles, WandSparkles, X } from 'lucide-react';
+import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react';
 import type { ChatAttachment, ProviderProfile } from '../types';
 import { useAppStore } from '../store';
 import { IconButton } from './ui';
-import { prepareChatAttachments } from '../lib/attachments';
+import { createPastedTextAttachment, LONG_PASTE_CHAR_THRESHOLD, prepareChatAttachments } from '../lib/attachments';
 import { estimateTokens, formatTokenCount } from '../lib/tokens';
+import { skillName } from '../lib/skills';
+import { SkillPicker } from './SkillPicker';
 
 export function Composer({
   profile,
@@ -16,7 +18,7 @@ export function Composer({
 }: {
   profile: ProviderProfile;
   busy: boolean;
-  onSend: (text: string, attachments: ChatAttachment[]) => Promise<void>;
+  onSend: (text: string, attachments: ChatAttachment[], skillIds: string[]) => Promise<void>;
   onOptimize: (text: string) => Promise<void>;
   replacement?: string;
   onReplacementApplied?: () => void;
@@ -26,6 +28,9 @@ export function Composer({
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState('');
   const [dragging, setDragging] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
+  const [composerNotice, setComposerNotice] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const settings = useAppStore((state) => state.settings);
@@ -53,7 +58,7 @@ export function Composer({
     setText('');
     const outgoing = attachments;
     setAttachments([]);
-    await onSend(value || '请分析附件。', outgoing);
+    await onSend(value || '请分析附件。', outgoing, selectedSkillIds);
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -87,6 +92,31 @@ export function Composer({
     void addFiles([...event.dataTransfer.files]);
   };
 
+  const handleTextChange = (value: string) => {
+    if (/(^|\s)\$\$$/u.test(value)) {
+      setText(value.slice(0, -2).trimEnd());
+      setSkillsOpen(true);
+      return;
+    }
+    setText(value);
+  };
+
+  const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const pasted = event.clipboardData.getData('text/plain');
+    if (pasted.length < LONG_PASTE_CHAR_THRESHOLD) return;
+    event.preventDefault();
+    if (attachments.length >= 8) {
+      setAttachmentError('每次最多添加 8 个附件');
+      return;
+    }
+    setAttachments((current) => [...current, createPastedTextAttachment(pasted)]);
+    setComposerNotice(`已将 ${pasted.length.toLocaleString('zh-CN')} 字的粘贴内容转换为本地附件`);
+  };
+
+  const toggleFileSkill = () => setSelectedSkillIds((current) => current.includes('file-generation')
+    ? current.filter((id) => id !== 'file-generation')
+    : [...current, 'file-generation']);
+
   return (
     <div className="composer-wrap">
       <div
@@ -96,6 +126,12 @@ export function Composer({
         onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }}
         onDrop={handleDrop}
       >
+        <SkillPicker open={skillsOpen} selected={selectedSkillIds} onChange={setSelectedSkillIds} onClose={() => setSkillsOpen(false)} />
+        {selectedSkillIds.length ? (
+          <div className="selected-skills">
+            {selectedSkillIds.map((id) => <button type="button" key={id} onClick={() => setSelectedSkillIds((current) => current.filter((item) => item !== id))}>{skillName(id)} <X size={11} /></button>)}
+          </div>
+        ) : null}
         {attachments.length ? (
           <div className="attachment-strip">
             {attachments.map((attachment) => (
@@ -112,7 +148,8 @@ export function Composer({
         <textarea
           ref={textareaRef}
           value={text}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => handleTextChange(event.target.value)}
+          onPaste={handlePaste}
           onKeyDown={handleKeyDown}
           placeholder={`给 ${profile.name} 发送消息`}
           rows={1}
@@ -141,6 +178,12 @@ export function Composer({
               disabled={!text.trim() || optimizing}
             >
               {optimizing ? <LoaderCircle size={17} className="spin" /> : <Sparkles size={17} />}
+            </IconButton>
+            <IconButton label="选择 Skills（也可输入 $$）" className={selectedSkillIds.length ? 'active-tool' : ''} onClick={() => setSkillsOpen(true)}>
+              <WandSparkles size={17} />
+            </IconButton>
+            <IconButton label="文件生成模式" className={selectedSkillIds.includes('file-generation') ? 'active-tool' : ''} onClick={toggleFileSkill}>
+              <FileCode2 size={17} />
             </IconButton>
             <button
               type="button"
@@ -178,6 +221,7 @@ export function Composer({
         </div>
       </div>
       {attachmentError ? <small className="composer-error">{attachmentError}</small> : null}
+      {composerNotice ? <small className="composer-notice">{composerNotice}</small> : null}
       <small className="composer-footnote">Enter 发送 · Shift + Enter 换行 <span>发送前约 {formatTokenCount(estimatedTokens)} Token</span></small>
     </div>
   );
