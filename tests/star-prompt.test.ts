@@ -47,4 +47,17 @@ describe('StarPrompt', () => {
     render(createElement(StarPrompt, { initialized: true, conversations: [conversationWithReplies(6)] }));
     expect(screen.queryByRole('dialog', { name: '感谢你使用 StingyChat' })).toBeNull();
   });
+
+  it('keeps cumulative progress when earlier conversations are deleted', () => {
+    const first = conversationWithReplies(3);
+    const { rerender } = render(createElement(StarPrompt, { initialized: true, conversations: [first] }));
+    expect(screen.queryByRole('dialog', { name: '感谢你使用 StingyChat' })).toBeNull();
+
+    const later = conversationWithReplies(2);
+    later.id = 'later';
+    later.messages = later.messages.map((message) => ({ ...message, id: `later-${message.id}` }));
+    rerender(createElement(StarPrompt, { initialized: true, conversations: [later] }));
+
+    expect(screen.getByRole('dialog', { name: '感谢你使用 StingyChat' })).toBeTruthy();
+  });
 });
