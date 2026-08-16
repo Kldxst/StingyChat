@@ -1,0 +1,38 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "stingy-chat",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-08-15",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "GLM_SCHEDULER",
+        "class_name": "GlmScheduler"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-glm-scheduler",
+      "new_sqlite_classes": ["GlmScheduler"]
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "ADMIN_DB",
+      "database_name": "stingy-chat-admin",
+      "database_id": "de9c2561-1483-44fb-a09f-535d3be512c8"
+    }
+  ],
+  "vars": {
+    "GLM_BASE_URL": "https://open.bigmodel.cn/api/paas/v4",
+    "GLM_MODEL": "GLM-4.7-Flash",
+    "FREE_GLM_BASE_URL": "https://open.bigmodel.cn/api/paas/v4",
+    "FREE_GLM_MODEL": "GLM-4.5-Flash"
+  }
+}

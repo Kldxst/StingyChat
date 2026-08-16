@@ -1,0 +1,5 @@
+# Copy to .dev.vars and add a freshly rotated secret.
+GLM_API_KEY=
+FREE_GLM_API_KEY=
+GLM_FALLBACK_API_KEYS=[]
+ADMIN_PASSWORD=

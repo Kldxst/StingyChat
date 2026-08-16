@@ -1,0 +1,12 @@
+{
+  "name": "StingyChat",
+  "short_name": "StingyChat",
+  "description": "可配置的 Token 优化 AI 聊天工作台",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111815",
+  "theme_color": "#111815",
+  "icons": [
+    { "src": "/stingychat.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

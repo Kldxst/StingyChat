@@ -1,0 +1,184 @@
+import { ArrowUp, BrainCircuit, FileText, Globe2, LoaderCircle, Paperclip, Sparkles, X } from 'lucide-react';
+import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from 'react';
+import type { ChatAttachment, ProviderProfile } from '../types';
+import { useAppStore } from '../store';
+import { IconButton } from './ui';
+import { prepareChatAttachments } from '../lib/attachments';
+import { estimateTokens, formatTokenCount } from '../lib/tokens';
+
+export function Composer({
+  profile,
+  busy,
+  onSend,
+  onOptimize,
+  replacement,
+  onReplacementApplied,
+}: {
+  profile: ProviderProfile;
+  busy: boolean;
+  onSend: (text: string, attachments: ChatAttachment[]) => Promise<void>;
+  onOptimize: (text: string) => Promise<void>;
+  replacement?: string;
+  onReplacementApplied?: () => void;
+}) {
+  const [text, setText] = useState('');
+  const [optimizing, setOptimizing] = useState(false);
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState('');
+  const [dragging, setDragging] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const settings = useAppStore((state) => state.settings);
+  const updateSettings = useAppStore((state) => state.updateSettings);
+  const estimatedTokens = estimateTokens(text) + attachments.reduce((total, attachment) => (
+    total + (attachment.kind === 'image' ? Math.ceil(attachment.size / 750) : estimateTokens(attachment.text ?? ''))
+  ), 0);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = '0px';
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 190)}px`;
+  }, [text]);
+
+  useEffect(() => {
+    if (replacement === undefined) return;
+    setText(replacement);
+    onReplacementApplied?.();
+  }, [onReplacementApplied, replacement]);
+
+  const submit = async () => {
+    const value = text.trim();
+    if ((!value && !attachments.length) || busy) return;
+    setText('');
+    const outgoing = attachments;
+    setAttachments([]);
+    await onSend(value || '请分析附件。', outgoing);
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      void submit();
+    }
+  };
+
+  const optimize = async () => {
+    if (!text.trim() || optimizing) return;
+    setOptimizing(true);
+    await onOptimize(text);
+    setOptimizing(false);
+  };
+
+  const addFiles = async (files: File[]) => {
+    if (!files.length) return;
+    setAttachmentError('');
+    try {
+      const prepared = await prepareChatAttachments(files);
+      setAttachments((current) => [...current, ...prepared].slice(0, 8));
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : '附件处理失败');
+    }
+  };
+
+  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragging(false);
+    void addFiles([...event.dataTransfer.files]);
+  };
+
+  return (
+    <div className="composer-wrap">
+      <div
+        className={`composer ${dragging ? 'is-dragging' : ''}`}
+        onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
+        onDragOver={(event) => event.preventDefault()}
+        onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }}
+        onDrop={handleDrop}
+      >
+        {attachments.length ? (
+          <div className="attachment-strip">
+            {attachments.map((attachment) => (
+              <div className="attachment-chip" key={attachment.id}>
+                {attachment.kind === 'image' && attachment.dataUrl
+                  ? <img src={attachment.dataUrl} alt="" />
+                  : <span><FileText size={15} /></span>}
+                <b>{attachment.name}</b>
+                <button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}><X size={13} /></button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <textarea
+          ref={textareaRef}
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={`给 ${profile.name} 发送消息`}
+          rows={1}
+          aria-label="消息"
+        />
+        <div className="composer-toolbar">
+          <div className="composer-tools">
+            <IconButton label="添加图片或文件" onClick={() => fileRef.current?.click()} disabled={busy}>
+              <Paperclip size={17} />
+            </IconButton>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif,.txt,.md,.pdf,.docx,text/plain,text/markdown,application/pdf"
+              multiple
+              hidden
+              onChange={(event) => {
+                void addFiles([...(event.target.files ?? [])]);
+                event.target.value = '';
+              }}
+            />
+            <IconButton
+              label="智能优化提示词"
+              className={`spark-button ${optimizing ? 'is-loading' : ''}`}
+              onClick={() => void optimize()}
+              disabled={!text.trim() || optimizing}
+            >
+              {optimizing ? <LoaderCircle size={17} className="spin" /> : <Sparkles size={17} />}
+            </IconButton>
+            <button
+              type="button"
+              className={`tool-chip ${settings.reasoningEnabled ? 'active' : ''}`}
+              onClick={() => void updateSettings({ reasoningEnabled: !settings.reasoningEnabled })}
+              title={profile.capabilities.reasoning ? '使用模型原生思考' : '使用 GLM 辅助推演'}
+            >
+              <BrainCircuit size={15} /> 思考
+            </button>
+            {settings.reasoningEnabled ? (
+              <select
+                className="reasoning-effort-inline"
+                aria-label="思考强度"
+                value={settings.reasoningEffort}
+                onChange={(event) => void updateSettings({ reasoningEffort: event.target.value as typeof settings.reasoningEffort })}
+              >
+                <option value="minimal">最低</option>
+                <option value="low">低</option>
+                <option value="medium">中</option>
+                <option value="high">高</option>
+              </select>
+            ) : null}
+            <button
+              type="button"
+              className={`tool-chip ${settings.webSearch ? 'active' : ''}`}
+              onClick={() => void updateSettings({ webSearch: !settings.webSearch })}
+              title={profile.capabilities.webSearch ? '允许模型使用联网搜索' : '允许联网；当前模型可能忽略此选项'}
+            >
+              <Globe2 size={15} /> 联网
+            </button>
+          </div>
+          <IconButton label="发送" className="send-button" onClick={() => void submit()} disabled={(!text.trim() && !attachments.length) || busy}>
+            {busy ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={18} />}
+          </IconButton>
+        </div>
+      </div>
+      {attachmentError ? <small className="composer-error">{attachmentError}</small> : null}
+      <small className="composer-footnote">Enter 发送 · Shift + Enter 换行 <span>发送前约 {formatTokenCount(estimatedTokens)} Token</span></small>
+    </div>
+  );
+}
