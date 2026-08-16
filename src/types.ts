@@ -39,6 +39,18 @@ export interface ProviderProfile {
   hasEncryptedKey?: boolean;
 }
 
+export interface FavoriteModel {
+  id: string;
+  profileId: string;
+  model: string;
+  label: string;
+}
+
+export interface PersonalAssistantConfig {
+  baseUrl: string;
+  model: string;
+}
+
 export interface TokenTelemetry {
   inputTokens: number;
   outputTokens: number;

@@ -6,6 +6,7 @@ import type {
 } from '../types';
 import { consumeEventStream } from './sse';
 import { loadPersonalGlmSecret } from './crypto';
+import { loadPersonalAssistantConfig } from './preferences';
 import type { GlmQueueStatus, KnowledgeCitation } from '../types';
 import { sanitizeChatRequest } from './chatValidation';
 
@@ -26,13 +27,19 @@ function emitGlmStatus(status: GlmQueueStatus | { state: 'unavailable'; requestI
 
 async function personalGlmHeaders(): Promise<Record<string, string>> {
   const personalKey = (await loadPersonalGlmSecret())?.trim();
-  return personalKey ? { 'x-user-glm-api-key': personalKey } : {};
+  if (!personalKey) return {};
+  const config = loadPersonalAssistantConfig();
+  return {
+    'x-user-assistant-api-key': personalKey,
+    'x-user-assistant-base-url': encodeURIComponent(config.baseUrl),
+    'x-user-assistant-model': encodeURIComponent(config.model),
+  };
 }
 
 async function glmJsonRequest<T>(path: string, body: unknown, operation: string): Promise<T> {
   const requestId = crypto.randomUUID();
   const personalHeaders = await personalGlmHeaders();
-  const usesPersonalKey = 'x-user-glm-api-key' in personalHeaders;
+  const usesPersonalKey = 'x-user-assistant-api-key' in personalHeaders;
   let settled = false;
   const poll = async () => {
     if (settled || usesPersonalKey) return;
@@ -54,7 +61,7 @@ async function glmJsonRequest<T>(path: string, body: unknown, operation: string)
     emitGlmStatus({ requestId, state: 'completed', operation, position: 0, queuedAt: Date.now(), estimatedWaitMs: 0 });
     return result;
   } catch (error) {
-    emitGlmStatus({ state: 'unavailable', requestId, message: error instanceof Error ? error.message : '内置 GLM 暂不可用' });
+    emitGlmStatus({ state: 'unavailable', requestId, message: error instanceof Error ? error.message : '智能助手服务暂不可用' });
     throw error;
   } finally {
     settled = true;
@@ -70,7 +77,7 @@ export async function streamChat(
 ): Promise<void> {
   const personalHeaders = await personalGlmHeaders();
   const requestId = crypto.randomUUID();
-  const queued = request.profile.kind === 'stingy' && !('x-user-glm-api-key' in personalHeaders);
+  const queued = request.profile.kind === 'stingy' && !('x-user-assistant-api-key' in personalHeaders);
   let settled = false;
   const poll = async () => {
     if (!queued || settled) return;

@@ -442,7 +442,7 @@ export function ChatView() {
         runtimeContextPrompt(clientContext),
         skillsPrompt,
         compactMemory,
-        auxiliaryReasoning ? `辅助推演（GLM 生成的可公开规划，不是目标模型私有思维链）：\n${auxiliaryReasoning}` : '',
+        auxiliaryReasoning ? `智能助手推演（用于补充任务规划，不代表目标模型的私有思维过程）：\n${auxiliaryReasoning}` : '',
         webBlock ? `实时联网搜索摘要（回答时引用下面的来源）：\n${webBlock}` : '',
         imageBlocks.length ? `图片理解摘要：\n${imageBlocks.join('\n')}` : '',
         referenceBlock,
@@ -631,8 +631,8 @@ export function ChatView() {
         {conversation.messages.length === 0 ? (
           <motion.div className="empty-chat" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
             <div className="empty-glyph"><Sparkles size={26} /></div>
-            <h1>把问题说短一点</h1>
-            <p>StingyChat 会在发送前整理上下文，并把节省结果留在每条回复旁。</p>
+            <h1>从一个清晰的问题开始</h1>
+            <p>StingyChat 会在发送前整理提示词与上下文，并在每条回复旁提供 Token 使用明细。</p>
             <div className="quick-prompts">
               {quickPrompts.map((text) => (
                 <button key={text} onClick={() => void sendMessage(text)}>{text}</button>
@@ -655,7 +655,7 @@ export function ChatView() {
               <div className="message-body">
               {message.reasoningContent ? (
                   <details className="reasoning-panel">
-                    <summary><BrainCircuit size={15} /> {message.reasoningSource === 'glm' ? 'GLM 辅助推演' : '思考摘要'}</summary>
+                    <summary><BrainCircuit size={15} /> {message.reasoningSource === 'glm' ? '智能助手推演' : '思考摘要'}</summary>
                     <div className="reasoning-content"><MarkdownContent>{message.reasoningContent}</MarkdownContent></div>
                   </details>
                 ) : null}

@@ -44,16 +44,16 @@ export function GlmQueueNotice() {
         >
           <div className="glm-queue-icon">{needsKey ? <KeyRound size={17} /> : <LoaderCircle size={17} className="spin" />}</div>
           <div>
-            <b>{needsKey ? '内置 GLM 当前繁忙' : ('operation' in status ? status.operation : '智能辅助')}</b>
+            <b>{needsKey ? '智能助手服务当前繁忙' : ('operation' in status ? status.operation : '智能助手正在处理')}</b>
             <small>
               {status.state === 'unavailable'
                 ? status.message
-                : `队列 ${status.position || '处理中'} · 预计 ${Math.max(1, Math.ceil(status.estimatedWaitMs / 1_000))} 秒`}
+                : `当前队列位置：${status.position || '正在处理'} · 预计等待 ${Math.max(1, Math.ceil(status.estimatedWaitMs / 1_000))} 秒`}
             </small>
           </div>
           {needsKey ? (
             <button type="button" className="queue-key-button" onClick={() => setSettingsOpen(true)}>
-              <Clock3 size={14} /> 配置个人 Key
+              <Clock3 size={14} /> 配置私人智能助手
             </button>
           ) : null}
           <IconButton label="关闭队列提示" onClick={() => setStatus(undefined)}><X size={15} /></IconButton>

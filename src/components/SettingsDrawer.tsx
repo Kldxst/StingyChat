@@ -21,6 +21,11 @@ import {
   saveProviderSecret,
 } from '../lib/crypto';
 import { memoryToPrompt } from '../lib/optimization';
+import {
+  loadPersonalAssistantConfig,
+  removePersonalAssistantConfig,
+  savePersonalAssistantConfig,
+} from '../lib/preferences';
 import { requiresUserApiKey } from '../lib/providerAuth';
 import { useAppStore } from '../store';
 import type { OptimizationSettings, ProviderProfile } from '../types';
@@ -61,9 +66,12 @@ export function SettingsDrawer() {
   const [tab, setTab] = useState<SettingsTab>('connection');
   const [keyValue, setKeyValue] = useState('');
   const [hasKey, setHasKey] = useState(false);
-  const [personalGlmKey, setPersonalGlmKey] = useState('');
-  const [hasPersonalGlmKey, setHasPersonalGlmKey] = useState(false);
+  const [personalAssistantKey, setPersonalAssistantKey] = useState('');
+  const [hasPersonalAssistantKey, setHasPersonalAssistantKey] = useState(false);
+  const [personalAssistantBaseUrl, setPersonalAssistantBaseUrl] = useState(() => loadPersonalAssistantConfig().baseUrl);
+  const [personalAssistantModel, setPersonalAssistantModel] = useState(() => loadPersonalAssistantConfig().model);
   const [baseUrl, setBaseUrl] = useState(activeProfile?.baseUrl ?? '');
+  const [customModel, setCustomModel] = useState(activeProfile?.model ?? '');
   const [systemPrompt, setSystemPrompt] = useState(conversation?.systemPrompt ?? '');
   const [description, setDescription] = useState('');
   const [generating, setGenerating] = useState(false);
@@ -75,6 +83,7 @@ export function SettingsDrawer() {
 
   useEffect(() => {
     setBaseUrl(activeProfile?.baseUrl ?? '');
+    setCustomModel(activeProfile?.model ?? '');
     setKeyValue('');
     if (activeProfile && !requiresUserApiKey(activeProfile)) setHasKey(true);
     else if (activeProfile) void loadProviderSecret(activeProfile.id).then((value) => setHasKey(Boolean(value)));
@@ -84,7 +93,10 @@ export function SettingsDrawer() {
 
   useEffect(() => {
     if (!open) return;
-    void loadPersonalGlmSecret().then((value) => setHasPersonalGlmKey(Boolean(value)));
+    const config = loadPersonalAssistantConfig();
+    setPersonalAssistantBaseUrl(config.baseUrl);
+    setPersonalAssistantModel(config.model);
+    void loadPersonalGlmSecret().then((value) => setHasPersonalAssistantKey(Boolean(value)));
   }, [open]);
 
   useEffect(() => {
@@ -111,6 +123,7 @@ export function SettingsDrawer() {
     const updated: ProviderProfile = {
       ...activeProfile,
       baseUrl: activeProfile.kind === 'custom' ? baseUrl.trim() : activeProfile.baseUrl,
+      model: activeProfile.kind === 'custom' ? customModel.trim() || activeProfile.model : activeProfile.model,
     };
     if (keyValue.trim()) {
       await saveProviderSecret(activeProfile.id, keyValue.trim());
@@ -144,6 +157,42 @@ export function SettingsDrawer() {
     };
     await saveProfile(custom);
     await updateConversation(conversation.id, { providerProfileId: id });
+  };
+
+  const persistPersonalAssistant = async () => {
+    const nextBaseUrl = personalAssistantBaseUrl.trim().replace(/\/+$/u, '');
+    const nextModel = personalAssistantModel.trim();
+    try {
+      const parsed = new URL(nextBaseUrl);
+      if (parsed.protocol !== 'https:') throw new Error();
+    } catch {
+      setNotice('私人智能助手的 Base URL 必须是有效的 HTTPS 地址。');
+      return;
+    }
+    if (!nextModel) {
+      setNotice('请填写私人智能助手所使用的模型名称。');
+      return;
+    }
+    if (!personalAssistantKey.trim() && !hasPersonalAssistantKey) {
+      setNotice('请填写私人智能助手的 API Key。');
+      return;
+    }
+    savePersonalAssistantConfig({ baseUrl: nextBaseUrl, model: nextModel });
+    if (personalAssistantKey.trim()) await savePersonalGlmSecret(personalAssistantKey.trim());
+    setPersonalAssistantKey('');
+    setHasPersonalAssistantKey(true);
+    setNotice('私人智能助手配置已安全保存在此设备，并将优先用于所有智能辅助功能。');
+  };
+
+  const removePersonalAssistant = async () => {
+    await removePersonalGlmSecret();
+    removePersonalAssistantConfig();
+    const defaults = loadPersonalAssistantConfig();
+    setPersonalAssistantBaseUrl(defaults.baseUrl);
+    setPersonalAssistantModel(defaults.model);
+    setPersonalAssistantKey('');
+    setHasPersonalAssistantKey(false);
+    setNotice('私人智能助手配置已移除，后续请求将使用平台提供的智能助手服务。');
   };
 
   const generate = async () => {
@@ -230,7 +279,7 @@ export function SettingsDrawer() {
             <div className="settings-scroll">
               {tab === 'connection' ? (
                 <div className="settings-section">
-                  <div className="section-heading"><KeyRound size={16} /><h3>Provider</h3></div>
+                  <div className="section-heading"><KeyRound size={16} /><h3>模型服务</h3></div>
                   <div className="field">
                     <FieldLabel>供应商与模型</FieldLabel>
                     <ModelPicker conversationId={conversation.id} profile={activeProfile} variant="settings" />
@@ -238,7 +287,11 @@ export function SettingsDrawer() {
                   {activeProfile.kind === 'custom' ? (
                     <>
                       <label className="field">
-                        <FieldLabel>Base URL</FieldLabel>
+                        <FieldLabel>模型名称</FieldLabel>
+                        <input value={customModel} onChange={(event) => setCustomModel(event.target.value)} maxLength={160} placeholder="model-id" />
+                      </label>
+                      <label className="field">
+                        <FieldLabel>API Base URL</FieldLabel>
                         <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
                       </label>
                       <label className="field">
@@ -262,7 +315,7 @@ export function SettingsDrawer() {
                     </>
                   ) : null}
                   {!requiresUserApiKey(activeProfile) ? (
-                    <div className="settings-notice">免费模型已由 StingyChat 安全配置，无需填写 API Key。</div>
+                    <div className="settings-notice">此模型由 StingyChat 提供连接配置，无需填写 API Key。</div>
                   ) : (
                     <label className="field">
                       <FieldLabel>API Key {hasKey ? '· 已保存' : ''}</FieldLabel>
@@ -276,46 +329,60 @@ export function SettingsDrawer() {
                     </label>
                   )}
                   <button className="primary-button full" onClick={() => void persistConnection()}>
-                    <ShieldCheck size={15} /> 保存连接
+                    <ShieldCheck size={15} /> 保存模型服务配置
                   </button>
                   <button className="secondary-button full" onClick={() => void addCustomProvider()}>
-                    <Plus size={15} /> 添加自定义 Provider
+                    <Plus size={15} /> 添加自定义供应商
                   </button>
                   <div className="section-divider" />
-                  <div className="section-heading"><Sparkles size={16} /><h3>个人智能辅助 GLM</h3></div>
+                  <div className="section-heading"><Sparkles size={16} /><h3>私人智能助手</h3></div>
                   <div className="privacy-note">
-                    配置后，所有内置 GLM 调用都会使用你的 Key，包括 StingyChat、提示词优化、语义增强、摘要、搜索、图片理解与辅助推演。Key 仅加密保存在此浏览器并在当前 HTTPS 请求中转发，不写入 Worker 日志、数据库或缓存。官方服务不收费、无广告，也不出售 Key。
+                    配置后，免费对话、提示词优化、语义增强、上下文压缩、联网检索、图片理解、模型路由及辅助推演将优先使用此服务。API Key 由浏览器生成的非导出密钥加密保存，仅在发起 HTTPS 请求时解密并转发；服务端不会主动将其写入日志、数据库或缓存。官方服务不收取费用、不展示广告，也不会出售用户凭据。
                   </div>
                   <label className="field">
-                    <FieldLabel>GLM API Key {hasPersonalGlmKey ? '· 已保存' : ''}</FieldLabel>
+                    <FieldLabel>模型</FieldLabel>
+                    <input
+                      value={personalAssistantModel}
+                      onChange={(event) => setPersonalAssistantModel(event.target.value)}
+                      placeholder="例如：assistant-model"
+                      maxLength={160}
+                      autoComplete="off"
+                    />
+                  </label>
+                  <label className="field">
+                    <FieldLabel>API Base URL</FieldLabel>
+                    <input
+                      type="url"
+                      value={personalAssistantBaseUrl}
+                      onChange={(event) => setPersonalAssistantBaseUrl(event.target.value)}
+                      placeholder="https://api.example.com/v1"
+                      maxLength={500}
+                      autoComplete="url"
+                    />
+                  </label>
+                  <label className="field">
+                    <FieldLabel>API Key {hasPersonalAssistantKey ? '· 已保存' : ''}</FieldLabel>
                     <input
                       type="password"
-                      value={personalGlmKey}
-                      onChange={(event) => setPersonalGlmKey(event.target.value)}
-                      placeholder={hasPersonalGlmKey ? '输入新 Key 可替换' : 'bigmodel.cn API Key'}
+                      value={personalAssistantKey}
+                      onChange={(event) => setPersonalAssistantKey(event.target.value)}
+                      placeholder={hasPersonalAssistantKey ? '如需更新，请输入新的 API Key' : '仅加密保存在当前浏览器'}
                       autoComplete="off"
                     />
                   </label>
                   <div className="personal-key-actions">
                     <button
                       className="primary-button"
-                      disabled={!personalGlmKey.trim()}
-                      onClick={() => void savePersonalGlmSecret(personalGlmKey.trim()).then(() => {
-                        setPersonalGlmKey('');
-                        setHasPersonalGlmKey(true);
-                        setNotice('个人 GLM Key 已加密保存在此设备，所有内置 GLM 功能将优先使用它');
-                      })}
+                      disabled={!personalAssistantModel.trim() || !personalAssistantBaseUrl.trim() || (!personalAssistantKey.trim() && !hasPersonalAssistantKey)}
+                      onClick={() => void persistPersonalAssistant()}
                     >
-                      <ShieldCheck size={15} /> 保存个人 Key
+                      <ShieldCheck size={15} /> 保存私人助手配置
                     </button>
-                    {hasPersonalGlmKey ? (
+                    {hasPersonalAssistantKey ? (
                       <button
                         className="secondary-button"
-                        onClick={() => void removePersonalGlmSecret().then(() => {
-                          setHasPersonalGlmKey(false);
-                          setNotice('已删除个人 GLM Key，将恢复使用内置队列');
-                        })}
-                      >移除</button>
+                        onClick={() => void removePersonalAssistant()}
+                      ><Trash2 size={14} /> 移除配置</button>
                     ) : null}
                   </div>
                 </div>

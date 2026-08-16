@@ -9,6 +9,8 @@ import type {
   OptimizationSettings,
   ProviderProfile,
 } from './types';
+import type { FavoriteModel } from './types';
+import { loadFavoriteModels, saveFavoriteModels } from './lib/preferences';
 
 export type WorkspaceView = 'chat' | 'knowledge' | 'batch' | 'admin';
 
@@ -87,6 +89,7 @@ interface AppState {
   initialized: boolean;
   conversations: Conversation[];
   profiles: ProviderProfile[];
+  favoriteModels: FavoriteModel[];
   activeConversationId: string;
   lastProfileId: string;
   settings: OptimizationSettings;
@@ -108,6 +111,8 @@ interface AppState {
   updateSettings: (patch: Partial<OptimizationSettings>) => Promise<void>;
   toggleExtreme: (enabled: boolean) => Promise<void>;
   saveProfile: (profile: ProviderProfile) => Promise<void>;
+  addFavoriteModel: (favorite: FavoriteModel) => void;
+  removeFavoriteModel: (id: string) => void;
   setView: (view: WorkspaceView) => void;
   setSidebarOpen: (open: boolean) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -125,6 +130,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   initialized: false,
   conversations: [],
   profiles: DEFAULT_PROFILES,
+  favoriteModels: loadFavoriteModels(DEFAULT_PROFILES),
   activeConversationId: '',
   lastProfileId: DEFAULT_PROFILES[0].id,
   settings: DEFAULT_SETTINGS,
@@ -167,6 +173,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       initialized: true,
       profiles,
+      favoriteModels: loadFavoriteModels(profiles),
       conversations,
       activeConversationId: conversations[0].id,
       lastProfileId,
@@ -284,6 +291,19 @@ export const useAppStore = create<AppState>((set, get) => ({
         : [...state.profiles, profile],
     }));
   },
+
+  addFavoriteModel: (favorite) => set((state) => {
+    if (state.favoriteModels.some((item) => item.id === favorite.id)) return state;
+    const favoriteModels = [...state.favoriteModels, favorite].slice(0, 24);
+    saveFavoriteModels(favoriteModels);
+    return { favoriteModels };
+  }),
+
+  removeFavoriteModel: (id) => set((state) => {
+    const favoriteModels = state.favoriteModels.filter((item) => item.id !== id);
+    saveFavoriteModels(favoriteModels);
+    return { favoriteModels };
+  }),
 
   setView: (view) => set({ view, sidebarOpen: false }),
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),

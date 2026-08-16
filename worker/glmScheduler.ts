@@ -50,12 +50,12 @@ export class GlmScheduler {
     if (request.method === 'GET' && url.pathname.startsWith('/status/')) return this.status(url);
     if (request.method === 'POST' && url.pathname === '/run') {
       const task = await request.json<GlmTask>();
-      if (!task.requestId || !task.operation || !task.system || !task.user) return json({ error: 'GLM 任务格式无效' }, 400);
+      if (!task.requestId || !task.operation || !task.system || !task.user) return json({ error: '智能助手任务格式无效' }, 400);
       return this.enqueue({ kind: 'assist', requestId: task.requestId, operation: task.operation, task });
     }
     if (request.method === 'POST' && url.pathname === '/stream') {
       const body = await request.json<{ requestId?: string; operation?: string; request?: ChatRequest }>();
-      if (!body.requestId || !body.operation || !body.request?.conversationId) return json({ error: 'GLM 流式任务格式无效' }, 400);
+      if (!body.requestId || !body.operation || !body.request?.conversationId) return json({ error: '智能助手流式任务格式无效' }, 400);
       return this.enqueue({ kind: 'stream', requestId: body.requestId, operation: body.operation, request: body.request });
     }
     return json({ error: 'Not found' }, 404);
@@ -132,7 +132,7 @@ export class GlmScheduler {
         this.statuses.set(job.requestId, { state: 'waiting', operation: job.operation, queuedAt: job.queuedAt });
       } else {
         const limited = (error instanceof GlmUpstreamError || error instanceof ProviderUpstreamError) && error.status === 429;
-        this.finish(job, json({ error: limited ? '内置 GLM 请求已达到频率限制' : '内置 GLM 暂不可用', code: 'GLM_POOL_EXHAUSTED' }, 503), 'failed', true);
+        this.finish(job, json({ error: limited ? '智能助手请求已达到频率限制' : '智能助手服务暂不可用', code: 'GLM_POOL_EXHAUSTED' }, 503), 'failed', true);
       }
       this.release(candidate.id, started, false);
     }
@@ -199,7 +199,7 @@ export class GlmScheduler {
   private failExhausted(): void {
     while (this.queue.length) {
       const job = this.queue.shift()!;
-      this.finish(job, json({ error: '所有内置 GLM 凭据均在冷却中', code: 'GLM_POOL_EXHAUSTED' }, 503), 'failed', true);
+      this.finish(job, json({ error: '智能助手服务当前繁忙，请稍后重试', code: 'GLM_POOL_EXHAUSTED' }, 503), 'failed', true);
     }
   }
 }

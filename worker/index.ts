@@ -3,7 +3,7 @@ import type { Context } from 'hono';
 import { z } from 'zod';
 import type { ChatRequest, ConversationMemory } from '../src/types';
 import { getBatchResults, getBatchStatus, submitBatch } from './batch';
-import { callGlm, callGlmTask, parseJsonObject, type WorkerEnv } from './glm';
+import { callGlm, callGlmTask, parseJsonObject, type PersonalAssistantCredentials, type WorkerEnv } from './glm';
 export { GlmScheduler } from './glmScheduler';
 import { streamProvider } from './providers';
 import {
@@ -23,7 +23,7 @@ import {
   compressionSchema,
   routeSchema,
 } from './schemas';
-import { securityHeaders } from './security';
+import { securityHeaders, validateCustomBaseUrl } from './security';
 import {
   fallbackCacheKey,
   fallbackCacheMatch,
@@ -72,10 +72,21 @@ export function auditMessages(messages: ChatRequest['messages']) {
   }));
 }
 
+function decodeAssistantHeader(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try { return decodeURIComponent(value).trim(); } catch { return undefined; }
+}
+
 function internalGlmOptions(context: { req: { header(name: string): string | undefined } }, operation: string) {
-  const personalApiKey = context.req.header('x-user-glm-api-key')?.trim();
+  const apiKey = context.req.header('x-user-assistant-api-key')?.trim()
+    || context.req.header('x-user-glm-api-key')?.trim();
+  const baseUrl = decodeAssistantHeader(context.req.header('x-user-assistant-base-url'));
+  const model = decodeAssistantHeader(context.req.header('x-user-assistant-model'));
+  const personalAssistant: PersonalAssistantCredentials | string | undefined = apiKey
+    ? (baseUrl && model ? { apiKey, baseUrl, model } : apiKey)
+    : undefined;
   return {
-    personalApiKey: personalApiKey || undefined,
+    personalAssistant,
     requestId: context.req.header('x-glm-request-id') ?? crypto.randomUUID(),
     operation,
   };
@@ -85,6 +96,17 @@ app.use('*', async (context, next) => {
   if (context.req.path.startsWith('/api/')) {
     const length = Number(context.req.header('content-length') ?? 0);
     if (length > MAX_BODY_BYTES) return context.json({ error: '请求体超过 8 MB 限制' }, 413);
+    const personalKey = context.req.header('x-user-assistant-api-key');
+    if (personalKey) {
+      const baseUrl = decodeAssistantHeader(context.req.header('x-user-assistant-base-url'));
+      const model = decodeAssistantHeader(context.req.header('x-user-assistant-model'));
+      if (!baseUrl || !model || personalKey.length > 500 || baseUrl.length > 500 || model.length > 160) {
+        return context.json({ error: '私人智能助手配置不完整或超出长度限制' }, 400);
+      }
+      try { validateCustomBaseUrl(baseUrl); } catch (error) {
+        return context.json({ error: error instanceof Error ? error.message : '私人智能助手端点无效' }, 400);
+      }
+    }
   }
   await next();
   for (const [name, value] of Object.entries(securityHeaders())) context.res.headers.set(name, value);
@@ -127,8 +149,12 @@ app.post('/api/chat/stream', async (context) => {
   let response: Response;
   if (request.profile.kind === 'stingy') {
     const options = internalGlmOptions(context, 'stingy-chat');
-    if (options.personalApiKey) {
-      response = await streamProvider(providerRequest, options.personalApiKey, context.env.FREE_GLM_BASE_URL ?? context.env.GLM_BASE_URL);
+    if (options.personalAssistant) {
+      const personal = typeof options.personalAssistant === 'string'
+        ? { apiKey: options.personalAssistant, baseUrl: context.env.FREE_GLM_BASE_URL ?? context.env.GLM_BASE_URL, model: request.profile.model }
+        : options.personalAssistant;
+      const personalRequest = { ...providerRequest, profile: { ...providerRequest.profile, model: personal.model } };
+      response = await streamProvider(personalRequest, personal.apiKey, personal.baseUrl);
     } else if (context.env.GLM_SCHEDULER) {
       const stub = context.env.GLM_SCHEDULER.get(context.env.GLM_SCHEDULER.idFromName('global'));
       response = await stub.fetch('https://glm-scheduler/stream', {
@@ -217,7 +243,7 @@ app.post('/api/assist/optimize-prompt', async (context) => {
     context.env,
     '你是无损提示词编译器。按以下优先级处理：1. 原样保留事实、专有名词、变量、代码、数值、否定条件、权限边界和输出契约；2. 合并重复或同义指令，消解指代；3. 删除寒暄、情绪铺垫、元话语和无信息修饰；4. 将任务整理为目标、输入、约束、输出四个紧凑字段，仅在确有必要时使用字段。不得补充假设，不得回答任务。只输出可直接发送的优化提示词。',
     parsed.data.text,
-    0.1, options.personalApiKey, options.requestId, options.operation,
+    0.1, options.personalAssistant, options.requestId, options.operation,
   ).catch(() => fallbackOptimizePrompt(parsed.data.text));
   return context.json({ text });
 });
@@ -230,7 +256,7 @@ app.post('/api/assist/generate-system-prompt', async (context) => {
     context.env,
     '你是 System Prompt 架构师。根据描述生成可直接部署的提示词，依次明确：角色与目标、信息优先级、执行流程、硬约束、失败与不确定性处理、输出格式。只写能改变模型行为的规则；避免口号、重复、泛化的“认真思考”；不得扩大权限或虚构工具。规则应可测试、无冲突、语言紧凑。只输出提示词正文。',
     parsed.data.text,
-    0.2, options.personalApiKey, options.requestId, options.operation,
+    0.2, options.personalAssistant, options.requestId, options.operation,
   ).catch(() => fallbackSystemPrompt(parsed.data.text));
   return context.json({ text });
 });
@@ -244,7 +270,7 @@ app.post('/api/assist/generate-title', async (context) => {
     context.env,
     '为一轮对话生成便于扫描的中文标题。概括具体任务或主题，不使用引号、句号、冒号、泛化词“咨询”或“问题”。长度 6 到 18 个汉字，只输出标题。',
     parsed.data.text.slice(0, 12_000),
-    0.2, options.personalApiKey, options.requestId, options.operation,
+    0.2, options.personalAssistant, options.requestId, options.operation,
   ).then((value) => value.replace(/[\r\n"“”。，：:]/gu, '').trim().slice(0, 24) || fallback).catch(() => fallback);
   return context.json({ text });
 });
@@ -268,7 +294,7 @@ app.post('/api/conversation/compress', async (context) => {
     `${parsed.data.currentMemory ? `已有记忆：${parsed.data.currentMemory}\n` : ''}对话：\n${parsed.data.messages
       .map((message) => `${message.role}: ${message.content}`)
       .join('\n')}`,
-    0.1, options.personalApiKey, options.requestId, options.operation,
+    0.1, options.personalAssistant, options.requestId, options.operation,
   ).catch(() => JSON.stringify(fallbackMemory(parsed.data.messages)));
   const memory = memorySchema.parse(parseJsonObject<Omit<ConversationMemory, 'updatedAt'>>(content));
   return context.json({ ...memory, updatedAt: Date.now() });
@@ -282,7 +308,7 @@ app.post('/api/assist/route', async (context) => {
     context.env,
     '判断任务复杂度。复杂推理、多步骤规划、专业分析或高风险准确性要求为 complex；其余为 simple。只输出 JSON：{"route":"simple|complex","reason":"不超过20字"}。',
     JSON.stringify(parsed.data),
-    0, options.personalApiKey, options.requestId, options.operation,
+    0, options.personalAssistant, options.requestId, options.operation,
   ).catch(() => JSON.stringify(fallbackRoute(parsed.data.prompt, parsed.data.needsWebSearch, parsed.data.needsReasoning)));
   const result = z
     .object({ route: z.enum(['simple', 'complex']), reason: z.string().max(100) })
@@ -298,7 +324,7 @@ app.post('/api/assist/cache-match', async (context) => {
     context.env,
     '判断两个提问在给定上下文指纹下能否安全复用逐字相同的最终答案。只有目标、实体、时间范围、数值、约束、输出格式和所需新鲜度全部等价时才为 true；实时信息、不同版本、不同文件、代词指向不明或任一条件变化都必须为 false。宁可漏报，不可误命中。只输出 JSON：{"equivalent":true|false,"reason":"不超过20字"}。',
     JSON.stringify(parsed.data),
-    0, options.personalApiKey, options.requestId, options.operation,
+    0, options.personalAssistant, options.requestId, options.operation,
   ).catch(() => JSON.stringify(fallbackCacheMatch(parsed.data.prompt, parsed.data.candidatePrompt)));
   const result = z
     .object({ equivalent: z.boolean(), reason: z.string().max(100) })
@@ -314,7 +340,7 @@ app.post('/api/assist/cache-normalize', async (context) => {
     context.env,
     '将当前提问规范化为稳定的缓存检索键。结合上下文消解代词、省略和相对时间；显式写出任务动作、目标实体、版本或时间范围、关键数值、硬约束、输出格式与新鲜度要求。删除语气、同义措辞和无关历史，但不得泛化不同实体或条件，不得改变精度。不得回答问题。只输出一行规范化提问。',
     `${parsed.data.context ? `对话上下文：\n${parsed.data.context}\n\n` : ''}当前提问：\n${parsed.data.text}`,
-    0, options.personalApiKey, options.requestId, options.operation,
+    0, options.personalAssistant, options.requestId, options.operation,
   ).catch(() => fallbackCacheKey(parsed.data.text));
   return context.json({ text });
 });
@@ -327,7 +353,7 @@ app.post('/api/assist/reason', async (context) => {
     context.env,
     '你是可公开展示的任务规划器。根据上下文给出简短、可验证的分析提纲和执行注意点，不声称这是其他模型的私有思维链，不直接替用户完成最终回答。',
     `${parsed.data.context ? `上下文：\n${parsed.data.context}\n\n` : ''}任务：\n${parsed.data.text}`,
-    0.1, options.personalApiKey, options.requestId, options.operation,
+    0.1, options.personalAssistant, options.requestId, options.operation,
   );
   return context.json({ text, source: 'glm' });
 });
@@ -343,7 +369,7 @@ app.post('/api/assist/web-search', async (context) => {
     user: parsed.data.text,
     temperature: 0.1,
     webSearch: true,
-  }, options.personalApiKey);
+  }, options.personalAssistant);
   const citations = (result.sources ?? []).map((source, index) => ({
     chunkId: `web:${options.requestId}:${index}`,
     documentName: source.title,
@@ -371,7 +397,7 @@ app.post('/api/assist/understand-image', async (context) => {
     imageDataUrl: parsed.data.dataUrl,
     model: context.env.GLM_VISION_MODEL ?? 'GLM-4.6V-Flash',
     temperature: 0.1,
-  }, options.personalApiKey);
+  }, options.personalAssistant);
   return context.json({ text: result.content });
 });
 

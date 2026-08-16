@@ -1,3 +1,5 @@
+import { validateCustomBaseUrl } from './security';
+
 export interface WorkerEnv {
   ASSETS: Fetcher;
   GLM_API_KEY?: string;
@@ -20,6 +22,12 @@ export interface GlmCandidate {
   model: string;
 }
 
+export interface PersonalAssistantCredentials {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+}
+
 export interface GlmTask {
   requestId: string;
   operation: string;
@@ -37,7 +45,7 @@ interface GlmResult {
 }
 
 export class GlmUpstreamError extends Error {
-  constructor(public readonly status: number, message = `GLM upstream failed (${status})`) {
+  constructor(public readonly status: number, message = `智能助手上游请求失败 (${status})`) {
     super(message);
   }
 }
@@ -70,11 +78,11 @@ async function fetchWithDeadline(url: string, init: RequestInit, timeoutMs: numb
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      fetch(url, { ...init, signal: controller.signal }),
+      fetch(url, { ...init, signal: controller.signal, redirect: 'manual' }),
       new Promise<Response>((_, reject) => {
         timeoutId = setTimeout(() => {
           controller.abort();
-          reject(new Error('GLM request deadline exceeded'));
+          reject(new Error('智能助手请求超时'));
         }, timeoutMs);
       }),
     ]);
@@ -130,6 +138,10 @@ export async function executeGlmTask(candidate: GlmCandidate, task: GlmTask, tim
     headers: { Authorization: `Bearer ${candidate.apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }, timeoutMs);
+  if (response.status >= 300 && response.status < 400) {
+    await response.body?.cancel();
+    throw new Error('智能助手端点返回了未经允许的重定向');
+  }
   if (!response.ok) {
     const status = response.status;
     await response.body?.cancel();
@@ -138,16 +150,23 @@ export async function executeGlmTask(candidate: GlmCandidate, task: GlmTask, tim
   const payload = await response.json() as Record<string, unknown>;
   const choices = payload.choices as Array<{ message?: { content?: string } }> | undefined;
   const content = choices?.[0]?.message?.content?.trim();
-  if (!content) throw new Error('GLM did not return text');
+  if (!content) throw new Error('智能助手未返回文本内容');
   return { content, sources: extractSources(payload) };
 }
 
-function personalCandidate(env: WorkerEnv, apiKey: string, model?: string): GlmCandidate {
-  return { id: 'personal', apiKey, baseUrl: env.GLM_BASE_URL.replace(/\/+$/u, ''), model: model ?? env.GLM_MODEL };
+function personalCandidate(env: WorkerEnv, personal: string | PersonalAssistantCredentials, taskModel?: string): GlmCandidate {
+  if (typeof personal === 'string') {
+    return { id: 'personal', apiKey: personal, baseUrl: env.GLM_BASE_URL.replace(/\/+$/u, ''), model: taskModel ?? env.GLM_MODEL };
+  }
+  const baseUrl = validateCustomBaseUrl(personal.baseUrl).toString().replace(/\/+$/u, '');
+  return { id: 'personal', apiKey: personal.apiKey, baseUrl, model: personal.model };
 }
 
-export async function callGlmTask(env: WorkerEnv, task: GlmTask, personalApiKey?: string): Promise<GlmResult> {
-  if (personalApiKey) return executeGlmTask(personalCandidate(env, personalApiKey, task.model), task, 45_000);
+export async function callGlmTask(env: WorkerEnv, task: GlmTask, personalAssistant?: string | PersonalAssistantCredentials): Promise<GlmResult> {
+  if (personalAssistant) {
+    const personalTask = typeof personalAssistant === 'string' ? task : { ...task, model: undefined };
+    return executeGlmTask(personalCandidate(env, personalAssistant, task.model), personalTask, 45_000);
+  }
   if (env.GLM_SCHEDULER) {
     const stub = env.GLM_SCHEDULER.get(env.GLM_SCHEDULER.idFromName('global'));
     const response = await stub.fetch('https://glm-scheduler/run', {
@@ -156,7 +175,7 @@ export async function callGlmTask(env: WorkerEnv, task: GlmTask, personalApiKey?
       body: JSON.stringify(task),
     });
     const payload = await response.json() as GlmResult & { error?: string };
-    if (!response.ok) throw new Error(payload.error ?? '内置 GLM 暂不可用');
+    if (!response.ok) throw new Error(payload.error ?? '智能助手服务暂不可用');
     return payload;
   }
   const candidates = glmCandidates(env);
@@ -177,11 +196,11 @@ export async function callGlm(
   system: string,
   user: string,
   temperature = 0.2,
-  personalApiKey?: string,
+  personalAssistant?: string | PersonalAssistantCredentials,
   requestId: string = crypto.randomUUID(),
   operation = 'assist',
 ): Promise<string> {
-  const result = await callGlmTask(env, { requestId, operation, system, user, temperature }, personalApiKey);
+  const result = await callGlmTask(env, { requestId, operation, system, user, temperature }, personalAssistant);
   return result.content;
 }
 

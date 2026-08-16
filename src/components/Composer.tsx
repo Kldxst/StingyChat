@@ -203,7 +203,7 @@ export function Composer({
               type="button"
               className={`tool-chip ${settings.reasoningEnabled ? 'active' : ''}`}
               onClick={() => void updateSettings({ reasoningEnabled: !settings.reasoningEnabled })}
-              title={profile.capabilities.reasoning ? '使用模型原生思考' : '使用 GLM 辅助推演'}
+              title={profile.capabilities.reasoning ? '使用当前模型的原生思考能力' : '由智能助手生成可公开的辅助推演'}
             >
               <BrainCircuit size={15} /> 思考
             </button>

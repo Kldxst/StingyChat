@@ -1,12 +1,11 @@
-import { Check, ChevronDown, Sparkles } from 'lucide-react';
+import { Check, ChevronDown, Sparkles, Star, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { MODEL_OPTIONS, modelCatalogInfo } from '../config';
 import { useAppStore } from '../store';
 import type { ProviderKind, ProviderProfile } from '../types';
-
-const COMMON_PROFILE_IDS = ['stingy-free', 'openai-default', 'anthropic-default', 'gemini-default'];
+import { favoriteModelId } from '../lib/preferences';
 
 interface PanelPosition {
   left: number;
@@ -30,6 +29,9 @@ export function ModelPicker({
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const profiles = useAppStore((state) => state.profiles);
+  const favoriteModels = useAppStore((state) => state.favoriteModels);
+  const addFavoriteModel = useAppStore((state) => state.addFavoriteModel);
+  const removeFavoriteModel = useAppStore((state) => state.removeFavoriteModel);
   const saveProfile = useAppStore((state) => state.saveProfile);
   const updateConversation = useAppStore((state) => state.updateConversation);
 
@@ -88,21 +90,39 @@ export function ModelPicker({
     setOpen(false);
   };
 
-  const chooseModel = async (modelId: string) => {
-    const option = MODEL_OPTIONS[selectedProvider.kind].find((item) => item.id === modelId);
-    const catalog = modelCatalogInfo(modelId, option?.contextWindow ?? selectedProvider.contextWindow);
-    const updated = {
-      ...selectedProvider,
+  const profileForModel = (source: ProviderProfile, modelId: string): ProviderProfile => {
+    const option = MODEL_OPTIONS[source.kind].find((item) => item.id === modelId);
+    const catalog = modelCatalogInfo(modelId, option?.contextWindow ?? source.contextWindow);
+    return {
+      ...source,
       model: modelId,
       contextWindow: catalog.contextWindow,
       capabilities: {
-        ...selectedProvider.capabilities,
-        webSearch: Boolean(option?.webSearch),
-        vision: catalog.vision ?? selectedProvider.capabilities.vision,
+        ...source.capabilities,
+        webSearch: option ? Boolean(option.webSearch) : source.capabilities.webSearch,
+        vision: catalog.vision ?? source.capabilities.vision,
       },
     };
+  };
+
+  const chooseModel = async (modelId: string) => {
+    const updated = profileForModel(selectedProvider, modelId);
     await saveProfile(updated);
     await chooseProfile(updated);
+  };
+
+  const chooseFavorite = async (profileId: string, modelId: string) => {
+    const source = profiles.find((item) => item.id === profileId);
+    if (!source) return;
+    const updated = profileForModel(source, modelId);
+    await saveProfile(updated);
+    await chooseProfile(updated);
+  };
+
+  const toggleFavorite = (item: { id: string; label: string }) => {
+    const id = favoriteModelId(selectedProvider.id, item.id);
+    if (favoriteModels.some((favorite) => favorite.id === id)) removeFavoriteModel(id);
+    else addFavoriteModel({ id, profileId: selectedProvider.id, model: item.id, label: item.label });
   };
 
   return (
@@ -130,14 +150,26 @@ export function ModelPicker({
             transition={{ duration: 0.16 }}
           >
             <div className="common-models">
-              <small>常用模型</small>
-              <div>
-                {COMMON_PROFILE_IDS.map((id) => profiles.find((item) => item.id === id)).filter(Boolean).map((item) => (
-                  <button key={item!.id} type="button" onClick={() => void chooseProfile(item!)}>
-                    <span>{item!.kind === 'stingy' ? 'StingyChat' : item!.model}</span>
-                    {item!.kind === 'stingy' ? <b className="free-badge">Free</b> : null}
-                  </button>
-                ))}
+              <div className="common-models-heading">
+                <small>常用模型</small>
+                <span>使用模型列表中的星标进行添加</span>
+              </div>
+              <div className="favorite-model-list">
+                {favoriteModels.length ? favoriteModels.map((item) => {
+                  const favoriteProfile = profiles.find((profileItem) => profileItem.id === item.profileId);
+                  if (!favoriteProfile) return null;
+                  return (
+                    <div className="favorite-model" key={item.id}>
+                      <button type="button" onClick={() => void chooseFavorite(item.profileId, item.model)} title={`${favoriteProfile.name} · ${item.model}`}>
+                        <span>{favoriteProfile.kind === 'stingy' ? 'StingyChat' : item.label}</span>
+                        {favoriteProfile.kind === 'stingy' ? <b className="free-badge">Free</b> : null}
+                      </button>
+                      <button className="favorite-remove" type="button" aria-label={`从常用模型中移除 ${item.label}`} onClick={() => removeFavoriteModel(item.id)}>
+                        <X size={13} />
+                      </button>
+                    </div>
+                  );
+                }) : <p className="favorite-empty">尚未添加常用模型。可在下方模型列表中选择星标。</p>}
               </div>
             </div>
             <div className="model-select-grid">
@@ -152,13 +184,33 @@ export function ModelPicker({
               <div className="model-column">
                 <small>模型</small>
                 {models.length ? models.map((item) => (
-                  <button className={selectedProvider.model === item.id ? 'active' : ''} key={item.id} type="button" onClick={() => void chooseModel(item.id)}>
-                    <span>{item.label}</span>
-                    {selectedProvider.kind === 'stingy' ? <b className="free-badge">Free</b> : null}
-                    {selectedProvider.model === item.id ? <Check size={14} /> : null}
-                  </button>
+                  <div className={`model-option ${selectedProvider.model === item.id ? 'active' : ''}`} key={item.id}>
+                    <button type="button" onClick={() => void chooseModel(item.id)}>
+                      <span>{item.label}</span>
+                      {selectedProvider.kind === 'stingy' ? <b className="free-badge">Free</b> : null}
+                      {selectedProvider.model === item.id ? <Check size={14} /> : null}
+                    </button>
+                    <button
+                      className={`favorite-toggle ${favoriteModels.some((favorite) => favorite.id === favoriteModelId(selectedProvider.id, item.id)) ? 'active' : ''}`}
+                      type="button"
+                      aria-label={`${favoriteModels.some((favorite) => favorite.id === favoriteModelId(selectedProvider.id, item.id)) ? '从常用模型中移除' : '添加到常用模型'} ${item.label}`}
+                      aria-pressed={favoriteModels.some((favorite) => favorite.id === favoriteModelId(selectedProvider.id, item.id))}
+                      onClick={() => toggleFavorite(item)}
+                    ><Star size={14} /></button>
+                  </div>
                 )) : (
-                  <button type="button" onClick={() => void chooseProfile(selectedProvider)}>{selectedProvider.model}</button>
+                  <div className="model-option active">
+                    <button type="button" onClick={() => void chooseProfile(selectedProvider)}>
+                      <span>{selectedProvider.model}</span><Check size={14} />
+                    </button>
+                    <button
+                      className={`favorite-toggle ${favoriteModels.some((favorite) => favorite.id === favoriteModelId(selectedProvider.id, selectedProvider.model)) ? 'active' : ''}`}
+                      type="button"
+                      aria-label={`${favoriteModels.some((favorite) => favorite.id === favoriteModelId(selectedProvider.id, selectedProvider.model)) ? '从常用模型中移除' : '添加到常用模型'} ${selectedProvider.model}`}
+                      aria-pressed={favoriteModels.some((favorite) => favorite.id === favoriteModelId(selectedProvider.id, selectedProvider.model))}
+                      onClick={() => toggleFavorite({ id: selectedProvider.model, label: selectedProvider.model })}
+                    ><Star size={14} /></button>
+                  </div>
                 )}
               </div>
             </div>

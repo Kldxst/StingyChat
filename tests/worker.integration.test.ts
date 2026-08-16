@@ -169,4 +169,54 @@ describe('Worker chat integration', () => {
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer personal-secret');
     expect(JSON.stringify(init)).not.toContain('developer-');
   });
+
+  it('uses the private assistant endpoint and model for every assistant request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: '私人助手结果' } }],
+    }), { headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const response = await app.request('/api/assist/understand-image', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-user-assistant-api-key': 'personal-secret',
+        'x-user-assistant-base-url': encodeURIComponent('https://private.example/v9'),
+        'x-user-assistant-model': encodeURIComponent('private-vision-model'),
+      },
+      body: JSON.stringify({ text: '描述图片', dataUrl: 'data:image/png;base64,aGVsbG8=' }),
+    }, {
+      GLM_API_KEY: 'developer-primary', GLM_BASE_URL: 'https://assistant.example/v1', GLM_MODEL: 'assistant-model', GLM_VISION_MODEL: 'developer-vision-model',
+      ASSETS: { fetch: vi.fn() } as never,
+    });
+
+    expect(response.status).toBe(200);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(url).toBe('https://private.example/v9/chat/completions');
+    expect(body.model).toBe('private-vision-model');
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer personal-secret');
+    expect(JSON.stringify(init)).not.toContain('developer-');
+  });
+
+  it.each([
+    'http://assistant.example/v1',
+    'https://localhost/v1',
+    'https://127.0.0.1/v1',
+    'https://192.168.1.10/v1',
+  ])('rejects unsafe private assistant endpoint %s', async (baseUrl) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const response = await app.request('/api/assist/optimize-prompt', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-user-assistant-api-key': 'personal-secret',
+        'x-user-assistant-base-url': encodeURIComponent(baseUrl),
+        'x-user-assistant-model': 'private-model',
+      },
+      body: JSON.stringify({ text: '优化' }),
+    }, { GLM_BASE_URL: '', GLM_MODEL: '', ASSETS: { fetch: vi.fn() } as never });
+    expect(response.status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
