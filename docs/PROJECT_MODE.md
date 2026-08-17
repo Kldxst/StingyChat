@@ -14,11 +14,13 @@
 
 ## 本地桥
 
+在 `https://chat.kldxst.me/project` 的“桥接”页下载 `stingy-bridge.mjs`，进入需要授权的项目目录后运行：
+
 ```powershell
-npm run bridge -- --root D:\work\repository
+node "$env:USERPROFILE\Downloads\stingy-bridge.mjs" --root .
 ```
 
-桥仅绑定环回地址，要求精确 Origin、JSON Content-Type 和 Private Network Access 预检。配对码只使用一次；会话令牌保存在页面内存中并在八小时无效。命令使用参数数组执行而非 Shell 拼接，具有超时、输出上限、进程取消和根目录真实路径检查。
+独立脚本只依赖 Node.js 内置模块，不读取用户项目的 `package.json`。StingyChat 仓库开发者也可运行 `npm run bridge -- --root D:\work\repository`。桥仅绑定环回地址，要求精确 Origin、JSON Content-Type 和 Private Network Access 预检。配对码只使用一次；会话令牌保存在页面内存中并在八小时后失效。命令使用参数数组执行而非 Shell 拼接，具有超时、输出上限、进程取消和根目录真实路径检查。
 
 DSH 包先以禁用 lifecycle scripts 的方式安装到独立 profile。需要构建脚本、网络、提权或危险 Git 操作时必须单独确认。浏览器关闭或会话过期后需要重新配对。
 

@@ -104,6 +104,17 @@ function openAiResponseCitations(payload: Record<string, unknown>): KnowledgeCit
   return webCitation(annotation.url, annotation.title, '', String(annotation.start_index ?? crypto.randomUUID()));
 }
 
+function glmChatCitations(payload: Record<string, unknown>): KnowledgeCitation[] {
+  const raw = (payload.web_search ?? payload.search_result) as Array<Record<string, unknown>> | undefined;
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 8).flatMap((item, index) => webCitation(
+    item.link ?? item.url,
+    item.title ?? item.media,
+    item.content ?? item.summary,
+    `glm:${index}:${String(item.link ?? item.url ?? '')}`,
+  ));
+}
+
 function anthropicCitations(payload: Record<string, unknown>): KnowledgeCitation[] {
   const block = payload.content_block as Record<string, unknown> | undefined;
   const delta = payload.delta as Record<string, unknown> | undefined;
@@ -144,6 +155,20 @@ function openAIChatConfig(request: ChatRequest, apiKey: string, baseUrl: string)
   }
   if (request.settings.outputContract === 'json') body.response_format = { type: 'json_object' };
   if (request.profile.kind === 'qwen') body.enable_search = request.settings.webSearch;
+  if (request.profile.kind === 'stingy' && request.settings.webSearch) {
+    body.tools = [{
+      type: 'web_search',
+      web_search: {
+        enable: true,
+        search_engine: 'search_pro',
+        search_result: true,
+        count: 6,
+        search_recency_filter: 'noLimit',
+        content_size: 'medium',
+      },
+    }];
+    body.tool_choice = 'auto';
+  }
   if (request.settings.reasoningEnabled) {
     if (request.profile.kind === 'openai' || request.profile.kind === 'xai') {
       body.reasoning_effort = request.settings.reasoningEffort;
@@ -172,9 +197,11 @@ function openAIChatConfig(request: ChatRequest, apiKey: string, baseUrl: string)
       const usage = payload.usage as Record<string, number | Record<string, number>> | undefined;
       const details = usage?.completion_tokens_details as Record<string, number> | undefined;
       const promptDetails = usage?.prompt_tokens_details as Record<string, number> | undefined;
+      const citations = request.profile.kind === 'stingy' ? glmChatCitations(payload) : [];
       return {
         delta: choices?.[0]?.delta?.content,
         reasoningDelta: request.settings.reasoningEnabled ? choices?.[0]?.delta?.reasoning_content : undefined,
+        citations: citations.length ? citations : undefined,
         usage: usage
           ? {
               input: Number(usage.prompt_tokens ?? 0),

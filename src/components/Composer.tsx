@@ -213,6 +213,7 @@ export function Composer({
               type="button"
               className={`tool-chip ${settings.reasoningEnabled ? 'active' : ''}`}
               disabled={!canReason}
+              aria-pressed={settings.reasoningEnabled}
               onClick={() => void updateSettings({ reasoningEnabled: !settings.reasoningEnabled })}
               title={profile.capabilities.reasoning ? '使用当前模型的原生思考能力' : '由智能助手生成可公开的辅助推演'}
             >
@@ -240,6 +241,7 @@ export function Composer({
               type="button"
               className={`tool-chip ${settings.webSearch ? 'active' : ''}`}
               disabled={!canSearch}
+              aria-pressed={settings.webSearch}
               onClick={() => void updateSettings({ webSearch: !settings.webSearch })}
               title={profile.capabilities.webSearch ? '允许模型使用联网搜索' : '允许联网；当前模型可能忽略此选项'}
             >

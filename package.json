@@ -8,8 +8,10 @@
   },
   "type": "module",
   "scripts": {
+    "predev": "node scripts/sync-bridge.mjs",
     "dev": "vite --host 0.0.0.0",
     "dev:worker": "npm run build && wrangler dev --port 8787",
+    "prebuild": "node scripts/sync-bridge.mjs",
     "build": "tsc -b && vite build",
     "test": "vitest run",
     "test:watch": "vitest",

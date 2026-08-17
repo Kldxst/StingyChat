@@ -10,11 +10,12 @@ import { loadPersonalAssistantConfig } from './preferences';
 import type { GlmQueueStatus, KnowledgeCitation } from '../types';
 import { sanitizeChatRequest } from './chatValidation';
 
-async function jsonRequest<T>(path: string, body: unknown, headers?: HeadersInit): Promise<T> {
+async function jsonRequest<T>(path: string, body: unknown, headers?: HeadersInit, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify(body),
+    signal,
   });
   const payload = (await response.json().catch(() => undefined)) as { error?: string } & T;
   if (!response.ok) throw new Error(payload?.error || `请求失败 (${response.status})`);
@@ -36,7 +37,7 @@ async function personalGlmHeaders(): Promise<Record<string, string>> {
   };
 }
 
-async function glmJsonRequest<T>(path: string, body: unknown, operation: string): Promise<T> {
+async function glmJsonRequest<T>(path: string, body: unknown, operation: string, signal?: AbortSignal): Promise<T> {
   const requestId = crypto.randomUUID();
   const personalHeaders = await personalGlmHeaders();
   const usesPersonalKey = 'x-user-assistant-api-key' in personalHeaders;
@@ -57,7 +58,7 @@ async function glmJsonRequest<T>(path: string, body: unknown, operation: string)
     const result = await jsonRequest<T>(path, body, {
       'x-glm-request-id': requestId,
       ...personalHeaders,
-    });
+    }, signal);
     emitGlmStatus({ requestId, state: 'completed', operation, position: 0, queuedAt: Date.now(), estimatedWaitMs: 0 });
     return result;
   } catch (error) {
@@ -67,6 +68,23 @@ async function glmJsonRequest<T>(path: string, body: unknown, operation: string)
     settled = true;
     globalThis.clearInterval(timer);
   }
+}
+
+interface ProjectAgentStepRequest {
+  projectId: string;
+  prompt: string;
+  permissionMode: 'read' | 'workspace' | 'full';
+  activeFile?: { path: string; content: string; language: string };
+  fileIndex?: Array<{ path: string; language: string; size: number }>;
+}
+
+interface ProjectAgentStepResponse {
+  summary: string;
+  files?: Array<{ path: string; content: string }>;
+}
+
+export function projectAgentStep(input: ProjectAgentStepRequest, signal?: AbortSignal) {
+  return glmJsonRequest<ProjectAgentStepResponse>('/api/project/agent/step', input, '工程任务', signal);
 }
 
 export async function streamChat(

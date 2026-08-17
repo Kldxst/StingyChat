@@ -47,13 +47,13 @@ npm run dev:worker
 
 浏览器访问 `http://127.0.0.1:8787`。仅开发前端时可运行 `npm run dev`，Vite 会将 `/api` 代理到本地 Worker。
 
-需要本机 Shell、Git、stdio MCP 或 DSH runtime 时，在已授权项目根目录启动可选桥：
+需要本机 Shell、Git、stdio MCP 或 DSH runtime 时，在工程模式的“桥接”页下载独立脚本，然后在需要授权的项目根目录运行：
 
 ```powershell
-npm run bridge -- --root D:\path\to\project
+node "$env:USERPROFILE\Downloads\stingy-bridge.mjs" --root .
 ```
 
-桥只监听 `127.0.0.1:47321`，终端会显示一次性六位配对码。完整权限模型、插件格式和故障恢复见 [工程模式与插件](docs/PROJECT_MODE.md)。
+不需要在用户项目中安装 StingyChat，也不需要该项目定义 `bridge` npm 脚本。桥只监听 `127.0.0.1:47321`，终端会显示一次性六位配对码。完整权限模型、插件格式和故障恢复见 [工程模式与插件](docs/PROJECT_MODE.md)。
 
 复制 `.dev.vars.example` 为 `.dev.vars` 后只能填入新轮换的开发凭据：
 
