@@ -1,4 +1,4 @@
-+CREATE TABLE IF NOT EXISTS users (
+CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   cp_sub TEXT NOT NULL UNIQUE,
   username TEXT NOT NULL,
@@ -30,4 +30,3 @@ CREATE TABLE IF NOT EXISTS user_preferences (
   onboarding_status TEXT NOT NULL DEFAULT 'required',
   updated_at_ms INTEGER NOT NULL
 );
-
