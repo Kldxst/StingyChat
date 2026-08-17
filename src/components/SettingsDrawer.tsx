@@ -31,8 +31,9 @@ import { useAppStore } from '../store';
 import type { OptimizationSettings, ProviderProfile } from '../types';
 import { FieldLabel, IconButton, Toggle } from './ui';
 import { ModelPicker } from './ModelPicker';
+import { PersonalizationSettings } from './PersonalizationSettings';
 
-type SettingsTab = 'connection' | 'optimization' | 'system' | 'advanced';
+type SettingsTab = 'connection' | 'optimization' | 'system' | 'personality' | 'advanced';
 
 const TOGGLES: Array<{ key: keyof OptimizationSettings; label: string; note: string }> = [
   { key: 'ruleCompression', label: '规则压缩', note: '空白、冗余短语与重复指令' },
@@ -56,6 +57,7 @@ export function SettingsDrawer() {
   const conversations = useAppStore((state) => state.conversations);
   const profiles = useAppStore((state) => state.profiles);
   const settings = useAppStore((state) => state.settings);
+  const auth = useAppStore((state) => state.auth);
   const updateSettings = useAppStore((state) => state.updateSettings);
   const toggleExtreme = useAppStore((state) => state.toggleExtreme);
   const updateConversation = useAppStore((state) => state.updateConversation);
@@ -238,6 +240,7 @@ export function SettingsDrawer() {
     { id: 'connection', label: '连接' },
     { id: 'optimization', label: '优化' },
     { id: 'system', label: '系统' },
+    { id: 'personality', label: '个性' },
     { id: 'advanced', label: '高级' },
   ];
 
@@ -390,6 +393,8 @@ export function SettingsDrawer() {
 
               {tab === 'optimization' ? (
                 <div className="settings-section">
+                  {!auth.authenticated ? <div className="feature-lock"><ShieldCheck size={18} /><b>登录后可使用 Token 优化</b><span>匿名聊天保持可用，但所有优化功能由服务端强制关闭。</span><a href="/api/auth/login">使用 CP OAuth 登录</a></div> : null}
+                  <fieldset className="settings-fieldset" disabled={!auth.authenticated}>
                   <div className={`extreme-row ${settings.extremeMode ? 'active' : ''}`}>
                     <div><Zap size={18} /><span><b>极省模式</b><small>启用全部优化并压缩表达</small></span></div>
                     <Toggle checked={settings.extremeMode} onChange={(value) => void toggleExtreme(value)} label="极省模式" />
@@ -426,6 +431,7 @@ export function SettingsDrawer() {
                       <label className="field"><FieldLabel>复杂模型</FieldLabel><select value={settings.complexProfileId ?? ''} onChange={(event) => void updateSettings({ complexProfileId: event.target.value })}><option value="">未设置</option>{profiles.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.model}</option>)}</select></label>
                     </div>
                   ) : null}
+                  </fieldset>
                 </div>
               ) : null}
 
@@ -444,14 +450,14 @@ export function SettingsDrawer() {
                   <button
                     className="secondary-button full"
                     onClick={() => void compressNow()}
-                    disabled={compressing || conversation.messages.length < 6}
+                    disabled={!auth.authenticated || compressing || conversation.messages.length < 6}
                   >
                     {compressing ? <LoaderCircle size={15} className="spin" /> : <BrainCircuit size={15} />}
                     手动压缩早期对话
                   </button>
                   <div className="section-divider" />
                   <label className="field"><FieldLabel>描述想要的角色</FieldLabel><textarea rows={4} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="例如：严谨的 TypeScript 代码审查助手…" /></label>
-                  <button className="secondary-button full" onClick={() => void generate()} disabled={generating || !description.trim()}>
+                  <button className="secondary-button full" onClick={() => void generate()} disabled={!auth.authenticated || generating || !description.trim()}>
                     {generating ? <LoaderCircle size={15} className="spin" /> : <Sparkles size={15} />} 生成提示词
                   </button>
                   <div className="section-divider" />
@@ -479,6 +485,8 @@ export function SettingsDrawer() {
                   </div>
                 </div>
               ) : null}
+
+              {tab === 'personality' ? (auth.authenticated ? <PersonalizationSettings /> : <div className="settings-section"><div className="feature-lock"><ShieldCheck size={18} /><b>登录后建立个性配置</b><span>个性答案将加密保存，并可在应用前预览。</span><a href="/api/auth/login">使用 CP OAuth 登录</a></div></div>) : null}
 
               {tab === 'advanced' ? (
                 <div className="settings-section">

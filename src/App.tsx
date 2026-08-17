@@ -7,6 +7,7 @@ import { GlmQueueNotice } from './components/GlmQueueNotice';
 import { StarPrompt } from './components/StarPrompt';
 import { ArtifactPanel } from './components/ArtifactPanel';
 import { useAppStore } from './store';
+import { OnboardingWizard } from './components/OnboardingWizard';
 
 const ChatView = lazy(() => import('./components/ChatView').then((module) => ({ default: module.ChatView })));
 const KnowledgeView = lazy(() => import('./components/KnowledgeView').then((module) => ({ default: module.KnowledgeView })));
@@ -26,6 +27,7 @@ export default function App() {
   const settingsOpen = useAppStore((state) => state.settingsOpen);
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
   const artifactPanelOpen = useAppStore((state) => state.artifactPanelOpen);
+  const auth = useAppStore((state) => state.auth);
   const setSidebarOpen = useAppStore((state) => state.setSidebarOpen);
   const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
   const setArtifactPanelOpen = useAppStore((state) => state.setArtifactPanelOpen);
@@ -53,6 +55,7 @@ export default function App() {
   if (!initialized || !conversation || !profile) {
     return <div className="boot-screen"><div className="brand-mark"><Zap size={20} /></div><span>StingyChat</span></div>;
   }
+  if (auth.authenticated && auth.user?.onboardingStatus === 'required') return <OnboardingWizard />;
 
   const pageTitle = view === 'chat' ? conversation.title : view === 'knowledge' ? '资料库' : view === 'batch' ? '批处理工作台' : '管理员后台';
 

@@ -36,6 +36,8 @@ function telemetry(
     promptCache: cached,
   };
   const grossSaved = Object.values(savings).reduce((total, value) => total + value, 0);
+  const contextSavedTokens = Math.max(0, request.estimatedBaseline - request.estimatedSent);
+  const cacheReuseTokens = Math.max(0, cached);
   return {
     inputTokens: input,
     outputTokens: output,
@@ -44,7 +46,9 @@ function telemetry(
     actualTotal: actual ? input + output + reasoning : undefined,
     estimatedBaseline: request.estimatedBaseline,
     estimatedSent: request.estimatedSent,
-    estimatedSaved: Math.max(0, request.estimatedBaseline - request.estimatedSent),
+    estimatedSaved: contextSavedTokens + cacheReuseTokens,
+    contextSavedTokens,
+    cacheReuseTokens,
     estimatedGrossSaved: grossSaved,
     optimizationOverhead: Math.max(0, request.estimatedSent - Math.max(0, request.estimatedBaseline - grossSaved)),
     source: actual ? 'provider' : 'estimated',
@@ -167,6 +171,7 @@ function openAIChatConfig(request: ChatRequest, apiKey: string, baseUrl: string)
       const choices = payload.choices as Array<{ delta?: { content?: string; reasoning_content?: string } }> | undefined;
       const usage = payload.usage as Record<string, number | Record<string, number>> | undefined;
       const details = usage?.completion_tokens_details as Record<string, number> | undefined;
+      const promptDetails = usage?.prompt_tokens_details as Record<string, number> | undefined;
       return {
         delta: choices?.[0]?.delta?.content,
         reasoningDelta: request.settings.reasoningEnabled ? choices?.[0]?.delta?.reasoning_content : undefined,
@@ -175,7 +180,10 @@ function openAIChatConfig(request: ChatRequest, apiKey: string, baseUrl: string)
               input: Number(usage.prompt_tokens ?? 0),
               output: Number(usage.completion_tokens ?? 0),
               reasoning: Number(details?.reasoning_tokens ?? 0),
-              cached: Number(usage.prompt_cache_hit_tokens ?? 0),
+              cached: Math.max(
+                Number(usage.prompt_cache_hit_tokens ?? 0),
+                Number(promptDetails?.cached_tokens ?? 0),
+              ),
             }
           : undefined,
       };

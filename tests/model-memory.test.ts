@@ -13,6 +13,8 @@ describe('last model memory', () => {
 
   it('persists the pre-extreme snapshot so disabling restores settings after reload', () => {
     expect(source).toContain('beforeExtreme: settingsRecord?.beforeExtreme');
-    expect(source).toContain("db.settings.put({ id: 'global', value, beforeExtreme })");
+    expect(source).toContain('const beforeExtreme = enabled');
+    expect(source).toContain('set({ beforeExtreme })');
+    expect(source).toContain('await get().updateSettings(value)');
   });
 });

@@ -32,6 +32,24 @@ interface PromptOptimizationResult {
   steps: string[];
 }
 
+const CRITICAL_PATTERNS = [
+  /https?:\/\/[^\s)\]}]+/giu,
+  /\b\d+(?:\.\d+)?(?:%|[a-z]{1,6})?\b/giu,
+  /(?:不要|不得|禁止|不允许|不能|必须|仅|只输出|\bnever\b|\bnot\b|\bmust\b|\bonly\b)/giu,
+  /`[^`\n]+`/gu,
+  /(?:JSON|Markdown|代码块|选项字母|CSV|XML)/giu,
+];
+
+function criticalSpans(text: string): string[] {
+  return CRITICAL_PATTERNS.flatMap((pattern) => [...text.matchAll(pattern)].map((match) => match[0].toLocaleLowerCase()));
+}
+
+export function isSafeCompressionCandidate(original: string, candidate: string): boolean {
+  if (!candidate.trim() || estimateTokens(candidate) >= estimateTokens(original)) return false;
+  const normalized = candidate.toLocaleLowerCase();
+  return criticalSpans(original).every((span) => normalized.includes(span));
+}
+
 export function removeChinesePoliteness(text: string): string {
   return POLITE_PATTERNS.reduce((value, pattern) => value.replace(pattern, ''), text)
     .replace(/^[，,、\s]+/u, '')
@@ -83,6 +101,10 @@ export function optimizePromptLocally(
       .replace(/\n输出：/gu, '\nO:')
       .replace(/\n格式：/gu, '\nF:');
     steps.push('CHIP 风格高密度协议');
+  }
+  if (!isSafeCompressionCandidate(prompt, optimized)) {
+    optimized = prompt;
+    steps.length = 0;
   }
   const tokensBefore = estimateTokens(prompt);
   const tokensAfter = estimateTokens(optimized);
@@ -144,15 +166,27 @@ export function selectContext(
   threshold: number,
 ): { messages: Array<Pick<ChatMessage, 'role' | 'content' | 'attachments'>>; shouldCompress: boolean; estimatedTokens: number } {
   const budget = Math.max(512, Math.floor(contextWindow * threshold));
-  const result: Array<Pick<ChatMessage, 'role' | 'content' | 'attachments'>> = [];
+  const selected: Array<{ index: number; message: Pick<ChatMessage, 'role' | 'content' | 'attachments'>; cost: number }> = [];
   let used = estimateTokens(memoryToPrompt(memory));
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
+  const recentStart = Math.max(0, messages.length - 4);
+  for (let index = recentStart; index < messages.length; index += 1) {
     const message = messages[index];
     const cost = estimateTokens(message.content) + 4;
-    if (result.length >= 4 && used + cost > budget) break;
-    result.unshift({ role: message.role, content: message.content, attachments: message.attachments });
+    selected.push({ index, message: { role: message.role, content: message.content, attachments: message.attachments }, cost });
     used += cost;
   }
+  const salient = messages.slice(0, recentStart).map((message, index) => {
+    const text = message.content;
+    const signals = [/(?:必须|不得|不要|约束|偏好|记住|未完成|待办)/u, /https?:\/\//u, /\b\d+(?:\.\d+)?\b/u, /(?:引用|来源|文件)/u];
+    const score = signals.reduce((total, pattern) => total + (pattern.test(text) ? 2 : 0), 0) + (message.role === 'user' ? 1 : 0) + index / Math.max(1, recentStart);
+    return { message, index, score, cost: estimateTokens(text) + 4 };
+  }).sort((left, right) => right.score - left.score);
+  for (const candidate of salient) {
+    if (used + candidate.cost > budget) continue;
+    selected.push({ index: candidate.index, message: { role: candidate.message.role, content: candidate.message.content, attachments: candidate.message.attachments }, cost: candidate.cost });
+    used += candidate.cost;
+  }
+  const result = selected.toSorted((left, right) => left.index - right.index).map((item) => item.message);
   const fullEstimate = estimateMessages(messages);
   return {
     messages: result,

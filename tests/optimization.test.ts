@@ -7,6 +7,7 @@ import {
   optimizePromptLocally,
   removeChinesePoliteness,
   selectContext,
+  isSafeCompressionCandidate,
 } from '../src/lib/optimization';
 import type { ChatMessage, ConversationMemory } from '../src/types';
 
@@ -33,6 +34,12 @@ describe('prompt optimization', () => {
   it('adds strict output contracts to the stable system prompt', () => {
     const system = buildSystemPrompt('你是助手。', { ...DEFAULT_SETTINGS, outputContract: 'json' });
     expect(system).toContain('只输出合法 JSON');
+  });
+
+  it('rejects compression that loses numbers, negation, URLs, code, or contracts', () => {
+    const original = '必须访问 https://example.com/v2，保留数值 42，不要删除 `user_id`，只输出 JSON。';
+    expect(isSafeCompressionCandidate(original, '访问 example 并输出结果')).toBe(false);
+    expect(isSafeCompressionCandidate(original, original)).toBe(false);
   });
 
   it('keeps recent messages when the context budget is exceeded', () => {

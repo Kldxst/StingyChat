@@ -1,6 +1,22 @@
 import type { Conversation, SemanticCacheEntry } from '../types';
 import { db } from './db';
-import { tokenizeForSearch } from './knowledge';
+import { ngramTokenizer, tokenizeForSearch } from './knowledge';
+import { create, insert, insertMultiple, search } from '@orama/orama';
+
+type CacheSearchDocument = SemanticCacheEntry & { scope: string; searchText: string };
+let cacheIndex: Awaited<ReturnType<typeof create<{ id: 'string'; scope: 'enum'; prompt: 'string'; searchText: 'string'; answer: 'string'; createdAt: 'number' }>>> | undefined;
+let cacheIndexPromise: Promise<NonNullable<typeof cacheIndex>> | undefined;
+async function ensureCacheIndex() {
+  if (cacheIndex) return cacheIndex;
+  if (!cacheIndexPromise) cacheIndexPromise = (async () => {
+    const index = await create({ schema: { id: 'string', scope: 'enum', prompt: 'string', searchText: 'string', answer: 'string', createdAt: 'number' } as const, components: { tokenizer: ngramTokenizer } });
+    const entries = await db.cache.toArray();
+    if (entries.length) await insertMultiple(index, entries.map((entry): CacheSearchDocument => ({ ...entry, scope: `${entry.conversationId}:${entry.fingerprint}`, searchText: tokenizeForSearch(entry.prompt).join(' ') })));
+    cacheIndex = index;
+    return index;
+  })();
+  return cacheIndexPromise;
+}
 
 async function sha256(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
@@ -36,17 +52,18 @@ export async function findCacheCandidate(
   fingerprint: string,
   prompt: string,
 ): Promise<SemanticCacheEntry | undefined> {
-  const entries = await db.cache
-    .where('conversationId')
-    .equals(conversationId)
-    .filter((entry) => entry.fingerprint === fingerprint)
-    .toArray();
-  return entries
+  const index = await ensureCacheIndex();
+  const result = await search(index, { term: tokenizeForSearch(prompt).join(' '), properties: ['searchText'], where: { scope: { eq: `${conversationId}:${fingerprint}` } }, limit: 8, threshold: 0 });
+  const entries = result.hits.map((hit) => hit.document as CacheSearchDocument);
+  const candidate = entries
     .map((entry) => ({ entry, score: lexicalSimilarity(prompt, entry.prompt) }))
     .filter(({ score }) => score >= 0.55)
     .sort((a, b) => b.score - a.score)[0]?.entry;
+  return candidate ? db.cache.get(candidate.id) : undefined;
 }
 
 export async function saveCacheEntry(entry: Omit<SemanticCacheEntry, 'id' | 'createdAt'>): Promise<void> {
-  await db.cache.put({ ...entry, id: crypto.randomUUID(), createdAt: Date.now() });
+  const value = { ...entry, id: crypto.randomUUID(), createdAt: Date.now() };
+  await db.cache.put(value);
+  await insert(await ensureCacheIndex(), { ...value, scope: `${value.conversationId}:${value.fingerprint}`, searchText: tokenizeForSearch(value.prompt).join(' ') });
 }

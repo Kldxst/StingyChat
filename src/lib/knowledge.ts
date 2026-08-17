@@ -1,9 +1,29 @@
-import { Index } from 'flexsearch';
+import { create, insertMultiple, remove, search, type Tokenizer } from '@orama/orama';
 import type { KnowledgeChunk, KnowledgeCitation, KnowledgeDocument } from '../types';
 import { db } from './db';
 
 const CHUNK_SIZE = 900;
 const OVERLAP = 120;
+export const ngramTokenizer: Tokenizer = {
+  language: 'stingy-ngram',
+  normalizationCache: new Map(),
+  tokenize: (raw) => raw.toLocaleLowerCase().split(/\s+/u).filter(Boolean),
+};
+type KnowledgeSearchDocument = { id: string; documentId: string; documentName: string; text: string; terms: string };
+let knowledgeIndex: Awaited<ReturnType<typeof create<{ id: 'string'; documentId: 'string'; documentName: 'string'; text: 'string'; terms: 'string' }>>> | undefined;
+let knowledgeIndexPromise: Promise<NonNullable<typeof knowledgeIndex>> | undefined;
+
+async function ensureKnowledgeIndex() {
+  if (knowledgeIndex) return knowledgeIndex;
+  if (!knowledgeIndexPromise) knowledgeIndexPromise = (async () => {
+    const index = await create({ schema: { id: 'string', documentId: 'string', documentName: 'string', text: 'string', terms: 'string' } as const, components: { tokenizer: ngramTokenizer } });
+    const chunks = await db.chunks.toArray();
+    if (chunks.length) await insertMultiple(index, chunks.map((chunk): KnowledgeSearchDocument => ({ ...chunk, terms: chunk.terms.join(' ') })));
+    knowledgeIndex = index;
+    return index;
+  })();
+  return knowledgeIndexPromise;
+}
 
 export function tokenizeForSearch(text: string): string[] {
   const normalized = text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
@@ -90,44 +110,32 @@ export async function importKnowledgeFile(file: File): Promise<KnowledgeDocument
     await db.documents.put(document);
     await db.chunks.bulkPut(chunks);
   });
+  const index = await ensureKnowledgeIndex();
+  await insertMultiple(index, chunks.map((chunk): KnowledgeSearchDocument => ({ ...chunk, terms: chunk.terms.join(' ') })));
   return document;
 }
 
-function bm25Score(queryTerms: string[], chunk: KnowledgeChunk, averageLength: number): number {
-  const termFrequency = new Map<string, number>();
-  for (const term of chunk.terms) termFrequency.set(term, (termFrequency.get(term) ?? 0) + 1);
-  const k1 = 1.2;
-  const b = 0.75;
-  return queryTerms.reduce((score, term) => {
-    const frequency = termFrequency.get(term) ?? 0;
-    if (!frequency) return score;
-    const denominator = frequency + k1 * (1 - b + b * (chunk.terms.length / averageLength));
-    return score + (frequency * (k1 + 1)) / denominator;
-  }, 0);
-}
-
 export async function retrieveKnowledge(query: string, topK: number): Promise<KnowledgeCitation[]> {
-  const chunks = await db.chunks.toArray();
-  if (!chunks.length || !query.trim()) return [];
-  const index = new Index({ tokenize: 'forward', cache: false });
-  for (const chunk of chunks) index.add(chunk.id, chunk.terms.join(' '));
+  if (!query.trim()) return [];
+  const index = await ensureKnowledgeIndex();
   const queryTerms = tokenizeForSearch(query);
-  const hits = (await index.search(queryTerms.join(' '), { limit: Math.max(topK * 4, 12) })) as string[];
-  const hitSet = new Set(hits.map(String));
-  const candidates = chunks.filter((chunk) => hitSet.has(chunk.id));
-  const pool = candidates.length ? candidates : chunks;
-  const averageLength = pool.reduce((sum, chunk) => sum + chunk.terms.length, 0) / pool.length || 1;
-  return pool
-    .map((chunk) => ({ chunk, score: bm25Score(queryTerms, chunk, averageLength) }))
-    .filter(({ score }) => score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK)
-    .map(({ chunk, score }) => ({
+  const termResults = await Promise.all(queryTerms.slice(0, 32).map((term) => search(index, {
+    term, properties: ['terms'], limit: Math.max(12, topK * 4), threshold: 0,
+  })));
+  const ranked = new Map<string, { document: KnowledgeSearchDocument; score: number }>();
+  for (const result of termResults) for (const hit of result.hits) {
+    const chunk = hit.document as KnowledgeSearchDocument;
+    const current = ranked.get(chunk.id);
+    ranked.set(chunk.id, { document: chunk, score: (current?.score ?? 0) + hit.score });
+  }
+  return [...ranked.values()].toSorted((left, right) => right.score - left.score).slice(0, topK).map(({ document: chunk, score }) => {
+    return {
       chunkId: chunk.id,
       documentName: chunk.documentName,
       excerpt: chunk.text.slice(0, 280),
       score: Number(score.toFixed(3)),
-    }));
+    };
+  });
 }
 
 export async function knowledgeCorpusTextLength(): Promise<number> {
@@ -141,8 +149,10 @@ export async function knowledgeCorpusTextLength(): Promise<number> {
 }
 
 export async function removeKnowledgeDocument(documentId: string): Promise<void> {
+  const ids = await db.chunks.where('documentId').equals(documentId).primaryKeys();
   await db.transaction('rw', db.documents, db.chunks, async () => {
     await db.documents.delete(documentId);
     await db.chunks.where('documentId').equals(documentId).delete();
   });
+  if (knowledgeIndex) await Promise.all(ids.map((id) => remove(knowledgeIndex!, String(id))));
 }

@@ -60,11 +60,64 @@ export interface TokenTelemetry {
   estimatedBaseline: number;
   estimatedSent: number;
   estimatedSaved: number;
+  contextSavedTokens?: number;
+  cacheReuseTokens?: number;
   estimatedGrossSaved?: number;
   optimizationOverhead?: number;
   source: 'provider' | 'estimated';
   tokenizer?: 'provider' | 'tiktoken' | 'heuristic';
   savings?: TokenSavingsBreakdown;
+}
+
+export interface AuthUser {
+  id: string;
+  username: string;
+  displayName: string;
+  avatarUrl?: string;
+  onboardingStatus: 'required' | 'pending' | 'complete';
+}
+
+export interface AuthSessionState {
+  authenticated: boolean;
+  user?: AuthUser;
+}
+
+export interface OnboardingAnswers {
+  useCase: string;
+  expertise: 'beginner' | 'intermediate' | 'advanced';
+  answerLength: 'brief' | 'balanced' | 'detailed';
+  reasoningDepth: 'minimal' | 'balanced' | 'deep';
+  tone: 'formal' | 'neutral' | 'friendly';
+  structure: 'prose' | 'bullets' | 'steps';
+  proactivity: 'low' | 'medium' | 'high';
+  evidencePreference: 'none' | 'when-needed' | 'always';
+  creativity: 'deterministic' | 'balanced' | 'creative';
+  priority: 'speed' | 'cost' | 'quality';
+}
+
+export interface PersonalizationProfile {
+  systemPromptPrefix: string;
+  answerLength: OnboardingAnswers['answerLength'];
+  tone: OnboardingAnswers['tone'];
+  structure: OnboardingAnswers['structure'];
+  proactivity: OnboardingAnswers['proactivity'];
+  temperature: number;
+  topP: number;
+  reasoningEffort: ReasoningEffort;
+  webSearch: boolean;
+  citations: boolean;
+  autoSkills: boolean;
+  optimizationPreset: 'balanced' | 'efficient' | 'quality';
+}
+
+export interface UserPreferencesEnvelope {
+  version: number;
+  settings: OptimizationSettings;
+  favoriteModels: FavoriteModel[];
+  personalization?: PersonalizationProfile;
+  onboardingStatus: AuthUser['onboardingStatus'];
+  onboardingAnswers?: OnboardingAnswers;
+  updatedAt: number;
 }
 
 export interface TokenSavingsBreakdown {

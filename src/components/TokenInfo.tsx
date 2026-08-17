@@ -16,7 +16,7 @@ export function TokenInfo({ telemetry }: { telemetry: TokenTelemetry }) {
         {telemetry.cachedTokens > 0 ? <span><i>缓存命中</i><b>{formatTokenCount(telemetry.cachedTokens)}</b></span> : null}
         <hr />
         <span><i>实际发送</i><b>{formatTokenCount(telemetry.estimatedSent)}</b></span>
-        <span className="saved"><i>估算节省</i><b>-{formatTokenCount(telemetry.estimatedSaved)}</b></span>
+        <span className="saved"><i>综合节省</i><b>-{formatTokenCount(telemetry.estimatedSaved)}</b></span>
         {telemetry.estimatedGrossSaved !== undefined ? <span><i>优化毛节省</i><b>-{formatTokenCount(telemetry.estimatedGrossSaved)}</b></span> : null}
         {telemetry.optimizationOverhead ? <span><i>优化附加成本</i><b>+{formatTokenCount(telemetry.optimizationOverhead)}</b></span> : null}
         {telemetry.savings ? (
@@ -24,6 +24,8 @@ export function TokenInfo({ telemetry }: { telemetry: TokenTelemetry }) {
             <small>提示词 -{formatTokenCount(telemetry.savings.promptCompression)}</small>
             <small>历史 -{formatTokenCount(telemetry.savings.contextPruning)}</small>
             <small>JIT -{formatTokenCount(telemetry.savings.jitRetrieval)}</small>
+            <small>上下文净节省 -{formatTokenCount(telemetry.contextSavedTokens ?? Math.max(0, telemetry.estimatedBaseline - telemetry.estimatedSent))}</small>
+            <small>缓存复用 {formatTokenCount(telemetry.cacheReuseTokens ?? telemetry.cachedTokens)}</small>
             <small>语义缓存 -{formatTokenCount(telemetry.savings.semanticCache)}</small>
             <small>Prompt Cache {formatTokenCount(telemetry.savings.promptCache)}</small>
           </span>

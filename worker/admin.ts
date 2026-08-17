@@ -1,4 +1,3 @@
-import type { Context } from 'hono';
 import type { WorkerEnv } from './glm';
 
 const encoder = new TextEncoder();
@@ -72,7 +71,7 @@ interface IpRestriction {
   created_at: string;
 }
 
-export function requestIp(context: Context<{ Bindings: WorkerEnv }>): string {
+export function requestIp(context: { req: { header(name: string): string | undefined } }): string {
   return context.req.header('cf-connecting-ip') ?? 'unknown';
 }
 

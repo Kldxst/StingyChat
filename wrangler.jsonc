@@ -24,12 +24,19 @@
   ],
   "d1_databases": [
     {
+      "binding": "APP_DB",
+      "database_name": "stingy-chat-admin",
+      "database_id": "de9c2561-1483-44fb-a09f-535d3be512c8"
+    },
+    {
       "binding": "ADMIN_DB",
       "database_name": "stingy-chat-admin",
       "database_id": "de9c2561-1483-44fb-a09f-535d3be512c8"
     }
   ],
   "vars": {
+    "CP_OAUTH_BASE_URL": "https://www.cpoauth.com",
+    "PUBLIC_ORIGIN": "https://chat.kldxst.me",
     "GLM_BASE_URL": "https://open.bigmodel.cn/api/paas/v4",
     "GLM_MODEL": "GLM-4.7-Flash",
     "GLM_VISION_MODEL": "GLM-4.6V-Flash",

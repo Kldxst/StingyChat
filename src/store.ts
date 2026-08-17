@@ -1,16 +1,19 @@
 import { create } from 'zustand';
-import { DEFAULT_PROFILES, DEFAULT_SETTINGS } from './config';
+import { ANONYMOUS_SETTINGS, DEFAULT_PROFILES, DEFAULT_SETTINGS } from './config';
 import { db } from './lib/db';
 import { applyExtremeMode } from './lib/optimization';
 import type {
+  AuthSessionState,
   ChatMessage,
   Conversation,
   ConversationMemory,
   OptimizationSettings,
   ProviderProfile,
+  UserPreferencesEnvelope,
 } from './types';
 import type { FavoriteModel } from './types';
 import { loadFavoriteModels, saveFavoriteModels } from './lib/preferences';
+import { getAuthSession, getUserPreferences, logoutUser, updateUserPreferences } from './lib/auth';
 
 export type WorkspaceView = 'chat' | 'knowledge' | 'batch' | 'admin';
 
@@ -93,6 +96,9 @@ interface AppState {
   activeConversationId: string;
   lastProfileId: string;
   settings: OptimizationSettings;
+  auth: AuthSessionState;
+  preferencesVersion: number;
+  personalization?: UserPreferencesEnvelope['personalization'];
   beforeExtreme?: OptimizationSettings;
   view: WorkspaceView;
   sidebarOpen: boolean;
@@ -120,6 +126,8 @@ interface AppState {
   setActiveArtifact: (id?: string) => void;
   setSettingsOpen: (open: boolean) => void;
   setAdminToken: (token?: string) => void;
+  applyPreferences: (value: UserPreferencesEnvelope) => void;
+  logout: () => Promise<void>;
 }
 
 async function persistConversation(conversation: Conversation): Promise<void> {
@@ -133,7 +141,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   favoriteModels: loadFavoriteModels(DEFAULT_PROFILES),
   activeConversationId: '',
   lastProfileId: DEFAULT_PROFILES[0].id,
-  settings: DEFAULT_SETTINGS,
+  settings: ANONYMOUS_SETTINGS,
+  auth: { authenticated: false },
+  preferencesVersion: 0,
   view: 'chat',
   sidebarOpen: false,
   sidebarCollapsed: typeof localStorage === 'undefined' ? false : localStorage.getItem('stingy-sidebar-collapsed') === 'true',
@@ -143,11 +153,13 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   initialize: async () => {
     if (get().initialized) return;
-    const [storedConversations, storedProfiles, settingsRecord] = await Promise.all([
+    const [storedConversations, storedProfiles, settingsRecord, auth] = await Promise.all([
       db.conversations.orderBy('updatedAt').reverse().toArray(),
       db.profiles.toArray(),
       db.settings.get('global'),
+      getAuthSession().catch((): AuthSessionState => ({ authenticated: false })),
     ]);
+    const remotePreferences = auth.authenticated ? await getUserPreferences().catch(() => undefined) : undefined;
     const defaultIds = new Set(DEFAULT_PROFILES.map((profile) => profile.id));
     const storedById = new Map(storedProfiles.map((profile) => [profile.id, profile]));
     const nativeProfiles = DEFAULT_PROFILES.map((profile) => {
@@ -173,12 +185,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       initialized: true,
       profiles,
-      favoriteModels: loadFavoriteModels(profiles),
+      favoriteModels: remotePreferences?.favoriteModels.length ? remotePreferences.favoriteModels : loadFavoriteModels(profiles),
       conversations,
       activeConversationId: conversations[0].id,
       lastProfileId,
-      settings: { ...DEFAULT_SETTINGS, ...(settingsRecord?.value ?? {}) },
+      settings: auth.authenticated ? { ...DEFAULT_SETTINGS, ...(remotePreferences?.settings ?? settingsRecord?.value ?? {}) } : { ...ANONYMOUS_SETTINGS },
       beforeExtreme: settingsRecord?.beforeExtreme,
+      auth,
+      preferencesVersion: remotePreferences?.version ?? 0,
+      personalization: remotePreferences?.personalization,
     });
   },
 
@@ -265,22 +280,36 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   updateSettings: async (patch) => {
+    if (!get().auth.authenticated) {
+      if (Object.keys(patch).length === 1 && patch.theme) {
+        const value = { ...get().settings, theme: patch.theme };
+        await db.settings.put({ id: 'global', value });
+        set({ settings: value });
+      }
+      return;
+    }
     const value = { ...get().settings, ...patch };
-    await db.settings.put({ id: 'global', value, beforeExtreme: get().beforeExtreme });
-    set({ settings: value });
+    const state = get();
+    try {
+      const saved = await updateUserPreferences({ version: state.preferencesVersion, settings: value, favoriteModels: state.favoriteModels, personalization: state.personalization, onboardingStatus: state.auth.user?.onboardingStatus ?? 'complete', updatedAt: Date.now() });
+      await db.settings.put({ id: 'global', value: saved.settings, beforeExtreme: state.beforeExtreme });
+      set({ settings: saved.settings, preferencesVersion: saved.version, personalization: saved.personalization });
+    } catch (error) {
+      const latest = (error as Error & { latest?: UserPreferencesEnvelope }).latest;
+      if (latest) set({ settings: latest.settings, favoriteModels: latest.favoriteModels, preferencesVersion: latest.version, personalization: latest.personalization });
+      else throw error;
+    }
   },
 
   toggleExtreme: async (enabled) => {
+    if (!get().auth.authenticated) return;
     const state = get();
     const value = enabled
       ? applyExtremeMode(state.settings, true)
       : { ...(state.beforeExtreme ?? DEFAULT_SETTINGS), extremeMode: false };
     const beforeExtreme = enabled ? { ...state.settings, extremeMode: false } : undefined;
-    await db.settings.put({ id: 'global', value, beforeExtreme });
-    set({
-      settings: value,
-      beforeExtreme,
-    });
+    set({ beforeExtreme });
+    await get().updateSettings(value);
   },
 
   saveProfile: async (profile) => {
@@ -296,12 +325,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (state.favoriteModels.some((item) => item.id === favorite.id)) return state;
     const favoriteModels = [...state.favoriteModels, favorite].slice(0, 24);
     saveFavoriteModels(favoriteModels);
+    queueMicrotask(() => { if (get().auth.authenticated) void get().updateSettings({}); });
     return { favoriteModels };
   }),
 
   removeFavoriteModel: (id) => set((state) => {
     const favoriteModels = state.favoriteModels.filter((item) => item.id !== id);
     saveFavoriteModels(favoriteModels);
+    queueMicrotask(() => { if (get().auth.authenticated) void get().updateSettings({}); });
     return { favoriteModels };
   }),
 
@@ -320,5 +351,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       else sessionStorage.removeItem('stingy-admin-token');
     }
     set({ adminToken, view: adminToken ? 'admin' : 'chat', sidebarOpen: false });
+  },
+  applyPreferences: (value) => {
+    set((state) => ({
+      settings: value.settings,
+      favoriteModels: value.favoriteModels,
+      preferencesVersion: value.version,
+      personalization: value.personalization,
+      auth: state.auth.user ? { authenticated: true, user: { ...state.auth.user, onboardingStatus: value.onboardingStatus } } : state.auth,
+    }));
+  },
+  logout: async () => {
+    await logoutUser();
+    set({ auth: { authenticated: false }, settings: { ...ANONYMOUS_SETTINGS }, preferencesVersion: 0, personalization: undefined });
   },
 }));

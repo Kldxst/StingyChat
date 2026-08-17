@@ -36,6 +36,7 @@ export function Composer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const settings = useAppStore((state) => state.settings);
+  const auth = useAppStore((state) => state.auth);
   const updateSettings = useAppStore((state) => state.updateSettings);
   const estimatedTokens = estimateTokens(text) + attachments.reduce((total, attachment) => (
     total + (attachment.kind === 'image' ? Math.ceil(attachment.size / 750) : estimateTokens(attachment.text ?? ''))
@@ -109,7 +110,8 @@ export function Composer({
   const handleTextChange = (value: string) => {
     if (/(^|\s)\$\$$/u.test(value)) {
       setText(value.slice(0, -2).trimEnd());
-      setSkillsOpen(true);
+      if (auth.authenticated) setSkillsOpen(true);
+      else setComposerNotice('登录后可使用 Skills 与自动工具。');
       return;
     }
     setText(value);
@@ -189,19 +191,20 @@ export function Composer({
               label="智能优化提示词"
               className={`spark-button ${optimizing ? 'is-loading' : ''}`}
               onClick={() => void optimize()}
-              disabled={!text.trim() || optimizing}
+              disabled={!auth.authenticated || !text.trim() || optimizing}
             >
               {optimizing ? <LoaderCircle size={17} className="spin" /> : <Sparkles size={17} />}
             </IconButton>
-            <IconButton label="选择 Skills（也可输入 $$）" className={selectedSkillIds.length ? 'active-tool' : ''} onClick={() => setSkillsOpen(true)}>
+            <IconButton label={auth.authenticated ? '选择 Skills（也可输入 $$）' : '登录后可使用 Skills'} disabled={!auth.authenticated} className={selectedSkillIds.length ? 'active-tool' : ''} onClick={() => setSkillsOpen(true)}>
               <WandSparkles size={17} />
             </IconButton>
-            <IconButton label="文件生成模式" className={selectedSkillIds.includes('file-generation') ? 'active-tool' : ''} onClick={toggleFileSkill}>
+            <IconButton label="文件生成模式" disabled={!auth.authenticated} className={selectedSkillIds.includes('file-generation') ? 'active-tool' : ''} onClick={toggleFileSkill}>
               <FileCode2 size={17} />
             </IconButton>
             <button
               type="button"
               className={`tool-chip ${settings.reasoningEnabled ? 'active' : ''}`}
+              disabled={!auth.authenticated}
               onClick={() => void updateSettings({ reasoningEnabled: !settings.reasoningEnabled })}
               title={profile.capabilities.reasoning ? '使用当前模型的原生思考能力' : '由智能助手生成可公开的辅助推演'}
             >
@@ -223,6 +226,7 @@ export function Composer({
             <button
               type="button"
               className={`tool-chip ${settings.webSearch ? 'active' : ''}`}
+              disabled={!auth.authenticated}
               onClick={() => void updateSettings({ webSearch: !settings.webSearch })}
               title={profile.capabilities.webSearch ? '允许模型使用联网搜索' : '允许联网；当前模型可能忽略此选项'}
             >

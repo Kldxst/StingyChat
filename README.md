@@ -10,7 +10,7 @@ StingyChat 是运行在 Cloudflare Workers 上的 Token 优化 AI 聊天工作�
 - 支持 `$...$`、`$$...$$`、`\(...\)`、`\[...\]`，宽公式局部滚动并可复制 TeX。
 - 提示词规则压缩、结构化模板、CHIP 风格、Few-shot、输出契约和 TOON 紧凑记忆。
 - 原始历史、结构化长期摘要与最近窗口组成的分层上下文；达到预算阈值时自动调用 GLM 摘要。
-- TXT、Markdown、PDF、DOCX 本地解析，FlexSearch 与中英文 n-gram BM25 Top-K 检索。
+- TXT、Markdown、PDF、DOCX 本地解析，Orama 长生命周期中英文 n-gram Top-K 检索。
 - 图片压缩、原生视觉内容块，以及不支持视觉模型的 GLM 描述/OCR 回退。
 - Provider 原生搜索优先；不支持时使用 GLM `web_search` 回退，并统一显示 URL 来源与执行方。
 - 所有模型都显示思考开关与强度。原生支持时映射官方参数，否则注入 GLM 生成的公开辅助推演，不冒充私有思维链。
@@ -27,7 +27,7 @@ StingyChat 是运行在 Cloudflare Workers 上的 Token 优化 AI 聊天工作�
 - 前端：React 19、Vite、TypeScript、Zustand、Dexie、Motion、React Markdown、KaTeX。
 - Worker：Hono、Zod、Cloudflare Workers Static Assets。
 - 调度：`GlmScheduler` Durable Object，每个开发者 GLM Key 一个并发槽，FIFO 排队。
-- 存储：会话、资料、索引、语义缓存和用户 Key 均在浏览器 IndexedDB；管理员审计可选用 D1。
+- 存储：会话、资料、索引、语义缓存和用户 Key 位于浏览器 IndexedDB；D1 保存登录会话哈希、加密个性答案、版本化偏好与可选管理员审计。
 - Token：OpenAI 类模型按需动态加载 `js-tiktoken`，其他模型明确使用估算。
 
 详见 [架构说明](docs/ARCHITECTURE.md) 与 [Cloudflare 部署指南](docs/DEPLOYMENT.md)。
@@ -64,7 +64,7 @@ ADMIN_PASSWORD=
 - Workers Static Assets：`dist/`
 - Durable Object：`GLM_SCHEDULER`
 - SQLite Durable Object migration：`v1-glm-scheduler`
-- D1 binding：`ADMIN_DB`
+- D1 binding：`APP_DB`，并在一个发布周期内兼容 `ADMIN_DB`
 - 非敏感变量：GLM 模型名与 HTTPS Base URL
 
 生产 Secret：
@@ -74,6 +74,10 @@ npx wrangler secret put GLM_API_KEY
 npx wrangler secret put FREE_GLM_API_KEY
 npx wrangler secret put GLM_FALLBACK_API_KEYS
 npx wrangler secret put ADMIN_PASSWORD
+npx wrangler secret put CP_OAUTH_CLIENT_ID
+npx wrangler secret put CP_OAUTH_CLIENT_SECRET
+npx wrangler secret put SESSION_SECRET
+npx wrangler secret put PROFILE_ENCRYPTION_KEY
 ```
 
 所有曾出现在聊天、截图、日志或提交历史中的 Key 都视为已泄露，必须先在供应商后台撤销并重新生成。不要重新使用本项目开发对话中曾提供过的任何 Key。
@@ -85,6 +89,8 @@ npx wrangler secret put ADMIN_PASSWORD
 用户 Provider Key 和个人 GLM Key通过 Web Crypto AES-GCM 加密后写入当前浏览器 IndexedDB；加密密钥为不可导出的 `CryptoKey`。明文只在发起 HTTPS 请求时由浏览器解密，并通过请求头交给 Worker 转发。
 
 Worker 代码不会把这些 Key 写入 D1、缓存、错误响应或显式日志。个人 GLM Key 一旦配置，会替换所有开发者 GLM 调用，包括 StingyChat、提示词优化、System Prompt、语义增强、摘要、路由、搜索、推理和图片理解，并绕过开发者队列。该设计降低暴露面，但不能对浏览器扩展、恶意脚本、终端设备失陷或上游 Provider 作绝对安全保证。
+
+CP OAuth 仅请求 `openid profile`。回调完成后不会保存 CP access token 或 refresh token；浏览器会话使用 Secure、HttpOnly、SameSite=Lax Cookie，D1 仅保存随机会话令牌的 SHA-256 哈希。十项引导答案以用户 ID 和设置版本作为 AAD，经 AES-GCM 加密后写入 D1。
 
 启用管理员审计后，D1 保存消息正文、System Prompt、非敏感设置、模型、来源 IP 与回复。附件只保存名称、类型、大小等元数据；图片 Data URL、文档全文和任何 API Key 不写入 D1。部署者必须披露审计、设置保留期并以 Cloudflare Access 保护后台。
 

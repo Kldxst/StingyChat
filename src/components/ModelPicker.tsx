@@ -90,9 +90,9 @@ export function ModelPicker({
     setOpen(false);
   };
 
-  const profileForModel = (source: ProviderProfile, modelId: string): ProviderProfile => {
+  const profileForModel = async (source: ProviderProfile, modelId: string): Promise<ProviderProfile> => {
     const option = MODEL_OPTIONS[source.kind].find((item) => item.id === modelId);
-    const catalog = modelCatalogInfo(modelId, option?.contextWindow ?? source.contextWindow);
+    const catalog = await modelCatalogInfo(modelId, option?.contextWindow ?? source.contextWindow);
     return {
       ...source,
       model: modelId,
@@ -106,7 +106,7 @@ export function ModelPicker({
   };
 
   const chooseModel = async (modelId: string) => {
-    const updated = profileForModel(selectedProvider, modelId);
+    const updated = await profileForModel(selectedProvider, modelId);
     await saveProfile(updated);
     await chooseProfile(updated);
   };
@@ -114,7 +114,7 @@ export function ModelPicker({
   const chooseFavorite = async (profileId: string, modelId: string) => {
     const source = profiles.find((item) => item.id === profileId);
     if (!source) return;
-    const updated = profileForModel(source, modelId);
+    const updated = await profileForModel(source, modelId);
     await saveProfile(updated);
     await chooseProfile(updated);
   };

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
-import type { ChatRequest, ConversationMemory } from '../src/types';
+import type { ChatRequest, ConversationMemory, OnboardingAnswers, UserPreferencesEnvelope } from '../src/types';
 import { getBatchResults, getBatchStatus, submitBatch } from './batch';
 import { callGlm, callGlmTask, parseJsonObject, type PersonalAssistantCredentials, type WorkerEnv } from './glm';
 export { GlmScheduler } from './glmScheduler';
@@ -32,11 +32,25 @@ import {
   fallbackRoute,
   fallbackSystemPrompt,
 } from './assistFallbacks';
+import {
+  anonymousSettings,
+  beginOAuth,
+  finishOAuth,
+  getPreferences,
+  logout,
+  onboardingAnswersSchema,
+  personalizationSchema,
+  putPreferences,
+  resolveSession,
+  safePersonalization,
+  validMutationOrigin,
+} from './auth';
 
-const app = new Hono<{ Bindings: WorkerEnv }>();
+type AppEnvironment = { Bindings: WorkerEnv; Variables: { auth?: Awaited<ReturnType<typeof resolveSession>> } };
+const app = new Hono<AppEnvironment>();
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
-function networkRuntimePrompt(context: Context<{ Bindings: WorkerEnv }>): string {
+function networkRuntimePrompt(context: Context<AppEnvironment>): string {
   const cf = context.req.raw.cf as {
     country?: string;
     region?: string;
@@ -57,7 +71,7 @@ function networkRuntimePrompt(context: Context<{ Bindings: WorkerEnv }>): string
 }
 
 export function enrichChatRequestWithNetworkContext(
-  context: Context<{ Bindings: WorkerEnv }>,
+  context: Context<AppEnvironment>,
   request: ChatRequest,
 ): ChatRequest {
   const network = networkRuntimePrompt(context);
@@ -121,6 +135,62 @@ app.get('/api/health', (context) =>
   }),
 );
 
+app.get('/api/auth/login', (context) => beginOAuth(context));
+app.get('/api/auth/callback', (context) => finishOAuth(context));
+app.get('/api/auth/session', async (context) => context.json(await resolveSession(context)));
+app.post('/api/auth/logout', async (context) => validMutationOrigin(context) ? logout(context) : context.json({ error: '请求来源无效' }, 403));
+
+app.use('/api/user/*', async (context, next) => {
+  const auth = await resolveSession(context);
+  if (!auth.authenticated || !auth.user) return context.json({ error: '请先登录后使用此功能' }, 401);
+  if (context.req.method !== 'GET' && !validMutationOrigin(context)) return context.json({ error: '请求来源无效' }, 403);
+  context.set('auth', auth);
+  await next();
+});
+
+app.get('/api/user/preferences', async (context) => context.json(await getPreferences(context.env, context.get('auth')!.user!)));
+app.put('/api/user/preferences', async (context) => {
+  const body = await context.req.json<UserPreferencesEnvelope>().catch(() => undefined);
+  if (!body || !Number.isInteger(body.version) || !body.settings || !Array.isArray(body.favoriteModels)) return context.json({ error: '设置请求格式无效' }, 400);
+  const result = await putPreferences(context.env, context.get('auth')!.user!, body);
+  return result.conflict ? context.json({ error: '设置已在其他页面更新', latest: result.conflict }, 409) : context.json(result.value!);
+});
+
+async function proposePersonalization(context: Context<AppEnvironment>, answers: OnboardingAnswers) {
+  const fallback = safePersonalization(answers);
+  try {
+    const options = internalGlmOptions(context, 'personalization');
+    const content = await callGlm(
+      context.env,
+      '根据十项用户偏好生成聊天助手配置。不得推断敏感属性。只输出严格 JSON，字段为 systemPromptPrefix,answerLength,tone,structure,proactivity,temperature,topP,reasoningEffort,webSearch,citations,autoSkills,optimizationPreset。temperature 范围 0-2，topP 范围 0.1-1。',
+      JSON.stringify(answers), 0.2, options.personalAssistant, options.requestId, options.operation,
+    );
+    return { profile: personalizationSchema.parse(parseJsonObject(content)), pending: false };
+  } catch {
+    return { profile: fallback, pending: true };
+  }
+}
+
+app.post('/api/user/onboarding/complete', async (context) => {
+  const parsed = onboardingAnswersSchema.safeParse(await context.req.json().catch(() => undefined));
+  if (!parsed.success) return context.json({ error: '请完成全部十项引导问题' }, 400);
+  const user = context.get('auth')!.user!;
+  const current = await getPreferences(context.env, user);
+  const saved = await putPreferences(context.env, user, { ...current, onboardingAnswers: parsed.data, onboardingStatus: 'pending' });
+  if (saved.conflict) return context.json({ error: '设置版本冲突', latest: saved.conflict }, 409);
+  const proposal = await proposePersonalization(context, parsed.data);
+  return context.json({ ...proposal, preferences: saved.value });
+});
+
+app.post('/api/user/personalization/regenerate', async (context) => {
+  const body = await context.req.json().catch(() => undefined);
+  const auth = context.get('auth')!;
+  const existing = await getPreferences(context.env, auth.user!);
+  const parsed = onboardingAnswersSchema.safeParse(body ?? existing.onboardingAnswers);
+  if (!parsed.success) return context.json({ error: '尚无完整的个性引导答案' }, 400);
+  return context.json(await proposePersonalization(context, parsed.data));
+});
+
 app.get('/favicon.ico', (context) => context.body(null, 204));
 
 app.get('/api/assist/queue/:requestId', async (context) => {
@@ -138,6 +208,8 @@ app.post('/api/chat/stream', async (context) => {
     issues: parsed.error.issues.slice(0, 6).map((issue) => ({ path: issue.path.join('.'), code: issue.code, message: issue.message })),
   }, 400);
   const request = parsed.data as ChatRequest;
+  const auth = await resolveSession(context);
+  if (!auth.authenticated) request.settings = anonymousSettings();
   const ip = requestIp(context);
   const restriction = await getRestriction(context.env, ip);
   if (restriction?.block_chat) return context.json({ error: '当前网络段已被管理员限制聊天功能' }, 403);
@@ -189,8 +261,16 @@ app.post('/api/chat/stream', async (context) => {
 });
 
 app.use('/api/assist/*', async (context, next) => {
+  const auth = await resolveSession(context);
+  if (!auth.authenticated) return context.json({ error: '请先登录后使用智能辅助功能' }, 401);
   const restriction = await getRestriction(context.env, requestIp(context));
   if (restriction?.block_assist) return context.json({ error: '当前网络段已被管理员限制智能辅助功能' }, 403);
+  await next();
+});
+
+app.use('/api/conversation/*', async (context, next) => {
+  const auth = await resolveSession(context);
+  if (!auth.authenticated) return context.json({ error: '请先登录后使用上下文优化功能' }, 401);
   await next();
 });
 

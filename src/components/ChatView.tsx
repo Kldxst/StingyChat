@@ -199,6 +199,7 @@ export function ChatView() {
   const conversations = useAppStore((state) => state.conversations);
   const profiles = useAppStore((state) => state.profiles);
   const settings = useAppStore((state) => state.settings);
+  const personalization = useAppStore((state) => state.personalization);
   const appendMessage = useAppStore((state) => state.appendMessage);
   const appendMessages = useAppStore((state) => state.appendMessages);
   const updateConversation = useAppStore((state) => state.updateConversation);
@@ -409,7 +410,7 @@ export function ChatView() {
         }
       }
 
-      const baseSystem = buildSystemPrompt(conversation.systemPrompt, settings);
+      const baseSystem = buildSystemPrompt([personalization?.systemPromptPrefix, conversation.systemPrompt].filter(Boolean).join('\n\n'), settings);
       const clientContext = captureClientRuntimeContext();
       const skillsPrompt = buildSkillsPrompt(skillRun.skillIds, skillRun.contextBlocks);
       const compactMemory = memoryToCompactPrompt(memory, settings.toonStructured);
@@ -588,16 +589,17 @@ export function ChatView() {
     const assistant = makeMessage('assistant', cacheProposal.candidate.answer);
     const estimate = estimateMessages([...conversation.messages, makeMessage('user', cacheProposal.prompt)])
       + estimateTokens(conversation.systemPrompt);
-    const reused = estimateTokens(cacheProposal.candidate.answer);
     assistant.telemetry = {
       inputTokens: 0,
       outputTokens: 0,
       reasoningTokens: 0,
-      cachedTokens: reused,
+      cachedTokens: 0,
       actualTotal: 0,
       estimatedBaseline: estimate,
       estimatedSent: 0,
       estimatedSaved: estimate,
+      contextSavedTokens: estimate,
+      cacheReuseTokens: 0,
       estimatedGrossSaved: estimate,
       optimizationOverhead: 0,
       source: 'estimated',

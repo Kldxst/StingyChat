@@ -13,6 +13,13 @@ export interface WorkerEnv {
   GLM_SCHEDULER?: DurableObjectNamespace;
   ADMIN_PASSWORD?: string;
   ADMIN_DB?: D1Database;
+  APP_DB?: D1Database;
+  CP_OAUTH_BASE_URL?: string;
+  CP_OAUTH_CLIENT_ID?: string;
+  CP_OAUTH_CLIENT_SECRET?: string;
+  PUBLIC_ORIGIN?: string;
+  SESSION_SECRET?: string;
+  PROFILE_ENCRYPTION_KEY?: string;
 }
 
 export interface GlmCandidate {

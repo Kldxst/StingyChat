@@ -9,12 +9,15 @@ import {
   Plus,
   Search,
   Settings2,
+  LogIn,
+  LogOut,
   ShieldCheck,
   Trash2,
 } from 'lucide-react';
 import { motion, useReducedMotion } from 'motion/react';
 import { useMemo, useState } from 'react';
 import { GITHUB_REPOSITORY_URL } from '../config';
+import { loginUrl } from '../lib/auth';
 import { useAppStore } from '../store';
 import { IconButton } from './ui';
 
@@ -26,6 +29,8 @@ export function Sidebar() {
   const sidebarOpen = useAppStore((state) => state.sidebarOpen);
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
   const adminToken = useAppStore((state) => state.adminToken);
+  const auth = useAppStore((state) => state.auth);
+  const logout = useAppStore((state) => state.logout);
   const createConversation = useAppStore((state) => state.createConversation);
   const selectConversation = useAppStore((state) => state.selectConversation);
   const deleteConversation = useAppStore((state) => state.deleteConversation);
@@ -129,11 +134,12 @@ export function Sidebar() {
           <span><strong>GitHub 开源仓库</strong><small>查看源码与参与贡献</small></span>
         </a>
 
-        <button className="sidebar-settings" onClick={() => setSettingsOpen(true)}>
-          <span className="settings-avatar">S</span>
-          <span><strong>设置与偏好</strong><small>模型、优化与密钥</small></span>
+        <button className="sidebar-settings" onClick={() => auth.authenticated ? setSettingsOpen(true) : (window.location.href = loginUrl())}>
+          <span className="settings-avatar">{auth.user?.displayName?.slice(0, 1) ?? 'S'}</span>
+          <span><strong>{auth.user?.displayName ?? '登录 StingyChat'}</strong><small>{auth.authenticated ? '设置、个性与密钥' : '启用优化、Skills 与智能功能'}</small></span>
           <Settings2 size={17} />
         </button>
+        {auth.authenticated ? <button className="sidebar-auth-action" onClick={() => void logout()}><LogOut size={16} />退出登录</button> : <a className="sidebar-auth-action" href={loginUrl()}><LogIn size={16} />使用 CP OAuth 登录</a>}
       </aside>
     </>
   );

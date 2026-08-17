@@ -118,6 +118,22 @@ describe('provider request mapping', () => {
     expect(config.parse({ choices: [{ delta: { content: '答案', reasoning_content: '不应显示' } }] }).reasoningDelta).toBeUndefined();
   });
 
+  it('takes the maximum trustworthy OpenAI Chat cache field', () => {
+    const profile: ProviderProfile = { ...openai, capabilities: { ...openai.capabilities, responses: false } };
+    const config = createProviderConfig({ ...request(profile), settings: { ...DEFAULT_SETTINGS, webSearch: false } }, 'secret');
+    expect(config.parse({ usage: { prompt_tokens: 20, completion_tokens: 2, prompt_cache_hit_tokens: 3, prompt_tokens_details: { cached_tokens: 8 } }, choices: [] }).usage?.cached).toBe(8);
+  });
+
+  it('maps native Anthropic and Gemini cache usage', () => {
+    const anthropic: ProviderProfile = { ...openai, kind: 'anthropic', capabilities: { ...openai.capabilities, responses: false } };
+    const anthropicConfig = createProviderConfig({ ...request(anthropic), settings: { ...DEFAULT_SETTINGS, webSearch: false } }, 'secret');
+    anthropicConfig.parse({ type: 'message_start', message: { usage: { input_tokens: 12, cache_read_input_tokens: 7 } } });
+    expect(anthropicConfig.parse({ type: 'message_delta', usage: { output_tokens: 2 } }).usage?.cached).toBe(7);
+    const gemini: ProviderProfile = { ...openai, kind: 'gemini', capabilities: { ...openai.capabilities, responses: false } };
+    const geminiConfig = createProviderConfig({ ...request(gemini), settings: { ...DEFAULT_SETTINGS, webSearch: false } }, 'secret');
+    expect(geminiConfig.parse({ usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 2, cachedContentTokenCount: 6 } }).usage?.cached).toBe(6);
+  });
+
   it('explicitly disables hidden reasoning for the free StingyChat model', () => {
     const profile: ProviderProfile = {
       ...openai,

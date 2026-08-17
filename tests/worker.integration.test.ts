@@ -35,16 +35,18 @@ describe('Worker chat integration', () => {
     const text = await response.text();
     expect(response.status).toBe(200);
     expect(text).toContain('"type":"delta","text":"精简"');
-    expect(text).toContain('"type":"reasoning_delta","text":"先分析"');
+    expect(text).not.toContain('"type":"reasoning_delta"');
     expect(text).toContain('"cachedTokens":4');
-    expect(text).toContain('"estimatedSaved":15');
+    expect(text).toContain('"estimatedSaved":19');
+    expect(text).toContain('"contextSavedTokens":15');
+    expect(text).toContain('"cacheReuseTokens":4');
     expect(text).toContain('"estimatedGrossSaved":24');
     expect(text).toContain('"optimizationOverhead":9');
     const upstreamBody = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as Record<string, unknown>;
-    expect(upstreamBody.tools).toEqual([{ type: 'web_search' }]);
+    expect(upstreamBody.tools).toBeUndefined();
   });
 
-  it('uses the configured GLM vision model for image understanding', async () => {
+  it('protects image understanding from anonymous use', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       choices: [{ message: { content: '图片中有一张折线图' } }],
     }), { headers: { 'content-type': 'application/json' } }));
@@ -57,13 +59,11 @@ describe('Worker chat integration', () => {
       GLM_BASE_URL: 'https://assistant.example/v1', GLM_MODEL: 'text-model', GLM_VISION_MODEL: 'vision-model', GLM_API_KEY: 'worker-only',
       ASSETS: { fetch: vi.fn() } as never,
     });
-    expect(response.status).toBe(200);
-    const upstreamBody = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as Record<string, unknown>;
-    expect(upstreamBody.model).toBe('vision-model');
-    expect(upstreamBody.messages).toMatchObject([{ role: 'system' }, { role: 'user', content: [{ type: 'text' }, { type: 'image_url' }] }]);
+    expect(response.status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('normalizes prompts for semantic cache lookup with the internal assistant', async () => {
+  it('protects semantic cache normalization from anonymous use', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       choices: [{ message: { content: '查询 2026 年上海天气' } }],
     }), { headers: { 'content-type': 'application/json' } }));
@@ -73,28 +73,26 @@ describe('Worker chat integration', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text: '那明天呢？', context: '用户正在查询 2026 年上海天气' }),
     }, { GLM_BASE_URL: 'https://assistant.example/v1', GLM_MODEL: 'assistant', GLM_API_KEY: 'test', ASSETS: { fetch: vi.fn() } as never });
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ text: '查询 2026 年上海天气' });
-    const upstreamBody = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as { messages: Array<{ content: string }> };
-    expect(upstreamBody.messages[1].content).toContain('那明天呢？');
+    expect(response.status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it.each([
-    ['/api/assist/optimize-prompt', { text: '请优化' }, '优化结果'],
-    ['/api/assist/generate-system-prompt', { text: '代码助手' }, '系统提示词'],
-    ['/api/assist/route', { prompt: '分析任务', needsWebSearch: false, needsReasoning: true }, '{"route":"complex","reason":"需要分析"}'],
-    ['/api/assist/cache-match', { prompt: '问题', candidatePrompt: '问题', contextFingerprint: 'fingerprint' }, '{"equivalent":true,"reason":"完全一致"}'],
-    ['/api/conversation/compress', { messages: [{ role: 'user', content: '记住 A' }, { role: 'assistant', content: '已记录' }], currentMemory: '' }, '{"summary":"A","facts":["A"],"preferences":[],"openTasks":[],"constraints":[],"citations":[]}'],
-  ])('allows internal GLM endpoint %s without client authorization', async (path, body, glmText) => {
+    ['/api/assist/optimize-prompt', { text: '请优化' }],
+    ['/api/assist/generate-system-prompt', { text: '代码助手' }],
+    ['/api/assist/route', { prompt: '分析任务', needsWebSearch: false, needsReasoning: true }],
+    ['/api/assist/cache-match', { prompt: '问题', candidatePrompt: '问题', contextFingerprint: 'fingerprint' }],
+    ['/api/conversation/compress', { messages: [{ role: 'user', content: '记住 A' }, { role: 'assistant', content: '已记录' }], currentMemory: '' }],
+  ])('rejects anonymous internal endpoint %s', async (path, body) => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      choices: [{ message: { content: glmText } }],
+      choices: [{ message: { content: '不应调用' } }],
     }), { headers: { 'content-type': 'application/json' } })));
     const response = await app.request(path, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     }, { GLM_BASE_URL: 'https://assistant.example/v1', GLM_MODEL: 'assistant', GLM_API_KEY: 'worker-only', ASSETS: { fetch: vi.fn() } as never });
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(401);
   });
 
   it('uses the Worker free-model secret without a browser Provider key', async () => {
@@ -170,7 +168,7 @@ describe('Worker chat integration', () => {
     expect(JSON.stringify(init)).not.toContain('developer-');
   });
 
-  it('uses the private assistant endpoint and model for every assistant request', async () => {
+  it('does not let a private key bypass login for assistant requests', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       choices: [{ message: { content: '私人助手结果' } }],
     }), { headers: { 'content-type': 'application/json' } }));
@@ -189,13 +187,8 @@ describe('Worker chat integration', () => {
       ASSETS: { fetch: vi.fn() } as never,
     });
 
-    expect(response.status).toBe(200);
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
-    expect(url).toBe('https://private.example/v9/chat/completions');
-    expect(body.model).toBe('private-vision-model');
-    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer personal-secret');
-    expect(JSON.stringify(init)).not.toContain('developer-');
+    expect(response.status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it.each([

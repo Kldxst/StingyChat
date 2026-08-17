@@ -1,11 +1,10 @@
 import type { OptimizationSettings, ProviderKind, ProviderProfile } from './types';
-import { getModelInfoWithId, type ModelLike } from 'llm-info';
-
 export const GITHUB_REPOSITORY_URL = 'https://github.com/Kldxst/StingyChat';
 
-export function modelCatalogInfo(model: string, fallbackContext: number) {
+export async function modelCatalogInfo(model: string, fallbackContext: number) {
   try {
-    const info = getModelInfoWithId(model as ModelLike) as { contextWindowTokenLimit?: number; supportsImageInput?: boolean };
+    const { getModelInfoWithId } = await import('llm-info');
+    const info = getModelInfoWithId(model as never) as { contextWindowTokenLimit?: number; supportsImageInput?: boolean };
     return {
       contextWindow: info.contextWindowTokenLimit ?? fallbackContext,
       vision: info.supportsImageInput,
@@ -192,4 +191,26 @@ export const DEFAULT_SETTINGS: OptimizationSettings = {
   pinModel: false,
   autoSkills: true,
   theme: 'system',
+};
+
+export const ANONYMOUS_SETTINGS: OptimizationSettings = {
+  ...DEFAULT_SETTINGS,
+  ruleCompression: false,
+  removePoliteness: false,
+  structuredPrompt: false,
+  chipProtocol: false,
+  concisePersona: false,
+  automaticContextCompression: false,
+  promptCache: false,
+  semanticCache: false,
+  semanticHitEnhancement: false,
+  modelRouting: false,
+  jitRetrieval: false,
+  toonStructured: false,
+  extremeMode: false,
+  outputContract: 'free',
+  reasoningEnabled: false,
+  webSearch: false,
+  autoSkills: false,
+  fewShotExamples: [],
 };
