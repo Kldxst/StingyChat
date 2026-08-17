@@ -8,6 +8,7 @@ import {
   Plus,
   Search,
   ShieldCheck,
+  FolderKanban,
   Trash2,
 } from 'lucide-react';
 import { motion } from 'motion/react';
@@ -66,6 +67,9 @@ export function Sidebar() {
         <nav className="workspace-nav" aria-label="工作区">
           <button className={view === 'chat' ? 'active' : ''} onClick={() => setView('chat')}>
             <MessageSquare size={16} /> 对话
+          </button>
+          <button disabled={!auth.user?.permissions.includes('project_mode')} className={view === 'project' ? 'active' : ''} onClick={() => setView('project')} title={auth.authenticated ? '工程模式' : '登录后使用工程模式'}>
+            <FolderKanban size={16} /> 工程模式
           </button>
           <button className={view === 'knowledge' ? 'active' : ''} onClick={() => setView('knowledge')}>
             <Database size={16} /> 资料库

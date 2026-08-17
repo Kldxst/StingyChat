@@ -1,0 +1,9 @@
+{
+  "name": "stingychat-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "bin": { "stingy-bridge": "src/index.mjs" },
+  "scripts": { "start": "node src/index.mjs" }
+}

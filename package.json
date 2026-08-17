@@ -3,6 +3,9 @@
   "private": true,
   "version": "1.0.0",
   "license": "GPL-3.0-only",
+  "overrides": {
+    "dompurify": "3.4.13"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -12,17 +15,24 @@
     "test:watch": "vitest",
     "audit:dead-code": "knip --no-progress",
     "check": "npm run test && npm run build",
-    "deploy": "npm run build && wrangler deploy"
+    "deploy": "npm run build && wrangler deploy",
+    "bridge": "node packages/bridge/src/index.mjs"
   },
   "dependencies": {
+    "@isomorphic-git/lightning-fs": "^4.7.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@monaco-editor/react": "^4.7.0",
     "@orama/orama": "^3.1.18",
     "@toon-format/toon": "^4.1.1",
+    "browser-fs-access": "^0.38.0",
     "browser-image-compression": "^2.0.2",
     "dexie": "^4.0.11",
+    "diff": "^9.0.0",
     "docx": "^9.7.1",
     "file-saver": "^2.0.5",
     "highlight.js": "^11.12.0",
     "hono": "^4.10.6",
+    "isomorphic-git": "^1.41.4",
     "js-tiktoken": "^1.0.21",
     "jsonrepair": "^3.15.0",
     "katex": "^0.18.4",
@@ -30,6 +40,7 @@
     "lucide-react": "^0.468.0",
     "mammoth": "^1.8.0",
     "mathjs": "^15.2.0",
+    "monaco-editor": "^0.56.0",
     "motion": "^12.23.24",
     "papaparse": "^5.5.3",
     "pdfjs-dist": "^4.10.38",

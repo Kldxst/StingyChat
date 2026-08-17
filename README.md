@@ -21,6 +21,8 @@ StingyChat 是运行在 Cloudflare Workers 上的 Token 优化 AI 聊天工作�
 - 浏览器时间、时区与 Cloudflare IP 粗略位置会注入每轮上下文，用于纠正日期和地域判断；粗略位置不视为精确定位。
 - 输入 `$$` 打开可组合 Skills 面板；长于 6,000 字的粘贴内容自动转为仅在浏览器处理的文本附件。
 - 模型按具名 Markdown 代码围栏协议（例如 `filename="app.ts"`）生成文件，右侧文件栏可审查、复制并下载；DOCX 在浏览器生成。
+- `/project` 工程模式提供本地项目树、Monaco 编辑器、差异审查、自动检查点、工程助手事件流、终端桥接与插件市场；Monaco 和工程依赖仅在进入该路由时懒加载。
+- 插件市场识别 StingyChat、Codex Agent Plugin、DeepSeek Harness bundle、MCP 与 Agent Skill，并在安装前展示兼容等级、许可证和权限。
 
 ## 技术架构
 
@@ -44,6 +46,14 @@ npm run dev:worker
 ```
 
 浏览器访问 `http://127.0.0.1:8787`。仅开发前端时可运行 `npm run dev`，Vite 会将 `/api` 代理到本地 Worker。
+
+需要本机 Shell、Git、stdio MCP 或 DSH runtime 时，在已授权项目根目录启动可选桥：
+
+```powershell
+npm run bridge -- --root D:\path\to\project
+```
+
+桥只监听 `127.0.0.1:47321`，终端会显示一次性六位配对码。完整权限模型、插件格式和故障恢复见 [工程模式与插件](docs/PROJECT_MODE.md)。
 
 复制 `.dev.vars.example` 为 `.dev.vars` 后只能填入新轮换的开发凭据：
 

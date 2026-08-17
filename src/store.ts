@@ -19,7 +19,7 @@ import { getAuthSession, getUserPreferences, logoutUser } from './lib/auth';
 import { drainConversationSync, observeCloudConversation, observeCloudSync, pullCloudConversations, queueConversationSync } from './lib/cloudSync';
 import { schedulePreferenceSync } from './lib/preferenceSync';
 
-export type WorkspaceView = 'chat' | 'knowledge' | 'batch' | 'admin';
+export type WorkspaceView = 'chat' | 'project' | 'knowledge' | 'batch' | 'admin';
 
 const EMPTY_MEMORY: ConversationMemory = {
   summary: '',
@@ -153,7 +153,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   settings: ANONYMOUS_SETTINGS,
   auth: { authenticated: false },
   preferencesVersion: 0,
-  view: 'chat',
+  view: typeof location !== 'undefined' && location.pathname === '/project' ? 'project' : 'chat',
   sidebarOpen: false,
   sidebarCollapsed: typeof localStorage === 'undefined' ? false : localStorage.getItem('stingy-sidebar-collapsed') === 'true',
   artifactPanelOpen: false,
@@ -357,7 +357,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     return { favoriteModels };
   }),
 
-  setView: (view) => set({ view, sidebarOpen: false }),
+  setView: (view) => {
+    if (typeof history !== 'undefined') {
+      const target = view === 'project' ? '/project' : '/';
+      if (location.pathname !== target) history.pushState({ view }, '', target);
+    }
+    set({ view, sidebarOpen: false });
+  },
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
   setSidebarCollapsed: (sidebarCollapsed) => {
     if (typeof localStorage !== 'undefined') localStorage.setItem('stingy-sidebar-collapsed', String(sidebarCollapsed));

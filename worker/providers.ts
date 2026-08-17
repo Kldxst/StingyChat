@@ -403,6 +403,8 @@ export function createProviderConfig(request: ChatRequest, apiKey: string, freeB
 }
 
 export async function streamProvider(request: ChatRequest, apiKey: string, freeBaseUrl?: string): Promise<Response> {
+  const startedAt = Date.now();
+  const requestId = crypto.randomUUID();
   if (!apiKey) throw new Error('请先配置当前 Provider 的 API Key');
   const config = createProviderConfig(request, apiKey, freeBaseUrl);
   const upstream = await safeFetch(config.url, config.init);
@@ -417,13 +419,17 @@ export async function streamProvider(request: ChatRequest, apiKey: string, freeB
     throw new Error('Provider 未返回流式响应');
   }
   const reader = upstream.body.getReader();
+  const upstreamConnectedAt = Date.now();
   let outputText = '';
   let usageSent = false;
   let buffer = '';
+  let firstTokenAt: number | undefined;
   const citations = new Map(request.citations.map((citation) => [citation.url ?? citation.chunkId, citation]));
   const decoder = new TextDecoder();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      controller.enqueue(jsonEvent({ type: 'accepted', requestId, at: startedAt }));
+      controller.enqueue(jsonEvent({ type: 'upstream_connected', at: upstreamConnectedAt }));
       controller.enqueue(jsonEvent({ type: 'meta', citations: request.citations }));
       try {
         while (true) {
@@ -441,6 +447,10 @@ export async function streamProvider(request: ChatRequest, apiKey: string, freeB
               controller.enqueue(jsonEvent({ type: 'meta', citations: [...citations.values()] }));
             }
             if (parsed.delta) {
+              if (!firstTokenAt) {
+                firstTokenAt = Date.now();
+                controller.enqueue(jsonEvent({ type: 'first_token', at: firstTokenAt }));
+              }
               outputText += parsed.delta;
               if (outputText.length > ABNORMAL_OUTPUT_CHAR_LIMIT) {
                 await reader.cancel();
@@ -449,6 +459,10 @@ export async function streamProvider(request: ChatRequest, apiKey: string, freeB
               controller.enqueue(jsonEvent({ type: 'delta', text: parsed.delta }));
             }
             if (parsed.reasoningDelta) {
+              if (!firstTokenAt) {
+                firstTokenAt = Date.now();
+                controller.enqueue(jsonEvent({ type: 'first_token', at: firstTokenAt }));
+              }
               controller.enqueue(jsonEvent({ type: 'reasoning_delta', text: parsed.reasoningDelta }));
             }
             if (parsed.usage) {
@@ -483,6 +497,13 @@ export async function streamProvider(request: ChatRequest, apiKey: string, freeB
             }),
           );
         }
+        controller.enqueue(jsonEvent({ type: 'timing', trace: {
+          startedAt,
+          acceptedAt: startedAt,
+          upstreamConnectedAt,
+          firstTokenAt,
+          phases: [{ name: 'provider-connect', startedAt, finishedAt: upstreamConnectedAt, status: 'completed' }],
+        } }));
         controller.enqueue(jsonEvent({ type: 'done' }));
       } catch {
         controller.enqueue(jsonEvent({ type: 'error', message: '流式响应中断，请重试' }));

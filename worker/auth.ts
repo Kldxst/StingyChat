@@ -14,10 +14,10 @@ const SESSION_TTL = 30 * 24 * 60 * 60;
 const DEFAULT_QUOTA = 100 * 1024 * 1024;
 
 const ROLE_PERMISSIONS: Record<UserRole, FeaturePermission[]> = {
-  member: ['skills', 'smart_assist', 'reasoning', 'web_search', 'model_routing', 'batch', 'history_sync'],
-  support: ['skills', 'smart_assist', 'reasoning', 'web_search', 'model_routing', 'batch', 'history_sync', 'admin_users_read', 'admin_restrictions_read', 'admin_usage_read'],
-  admin: ['skills', 'smart_assist', 'reasoning', 'web_search', 'model_routing', 'batch', 'history_sync', 'admin_users_read', 'admin_users_write', 'admin_restrictions_read', 'admin_restrictions_write', 'admin_usage_read', 'admin_audit_read'],
-  owner: ['skills', 'smart_assist', 'reasoning', 'web_search', 'model_routing', 'batch', 'history_sync', 'admin_users_read', 'admin_users_write', 'admin_restrictions_read', 'admin_restrictions_write', 'admin_usage_read', 'admin_audit_read', 'admin_chat_read', 'admin_owner_actions'],
+  member: ['skills', 'smart_assist', 'reasoning', 'web_search', 'model_routing', 'batch', 'history_sync', 'project_mode', 'plugin_install', 'mcp_connect'],
+  support: ['skills', 'smart_assist', 'reasoning', 'web_search', 'model_routing', 'batch', 'history_sync', 'project_mode', 'plugin_install', 'mcp_connect', 'admin_users_read', 'admin_restrictions_read', 'admin_usage_read'],
+  admin: ['skills', 'smart_assist', 'reasoning', 'web_search', 'model_routing', 'batch', 'history_sync', 'project_mode', 'plugin_install', 'mcp_connect', 'admin_users_read', 'admin_users_write', 'admin_restrictions_read', 'admin_restrictions_write', 'admin_usage_read', 'admin_audit_read'],
+  owner: ['skills', 'smart_assist', 'reasoning', 'web_search', 'model_routing', 'batch', 'history_sync', 'project_mode', 'project_full_access', 'plugin_install', 'plugin_source_manage', 'mcp_connect', 'admin_users_read', 'admin_users_write', 'admin_restrictions_read', 'admin_restrictions_write', 'admin_usage_read', 'admin_audit_read', 'admin_chat_read', 'admin_owner_actions'],
 };
 
 export function rolePermissions(role: UserRole): FeaturePermission[] { return [...ROLE_PERMISSIONS[role]]; }

@@ -25,6 +25,11 @@ export type FeaturePermission =
   | 'model_routing'
   | 'batch'
   | 'history_sync'
+  | 'project_mode'
+  | 'project_full_access'
+  | 'plugin_install'
+  | 'plugin_source_manage'
+  | 'mcp_connect'
   | 'admin_users_read'
   | 'admin_users_write'
   | 'admin_restrictions_read'
@@ -33,6 +38,115 @@ export type FeaturePermission =
   | 'admin_audit_read'
   | 'admin_chat_read'
   | 'admin_owner_actions';
+
+export type ProjectPermissionMode = 'read' | 'workspace' | 'full';
+export type PluginFormat = 'stingy' | 'codex-agent-plugin' | 'dsh-bundle' | 'mcp' | 'agent-skill';
+export type PluginCompatibility = 'native' | 'bridge' | 'partial' | 'unavailable';
+export type PluginPermission = 'files:read' | 'files:write' | 'command:execute' | 'network' | 'credentials' | 'mcp' | 'hooks' | 'git' | 'ui';
+
+export interface ProjectWorkspace {
+  id: string;
+  namespace: string;
+  name: string;
+  permissionMode: ProjectPermissionMode;
+  rootHandle?: FileSystemDirectoryHandle;
+  fallback: boolean;
+  activeFilePath?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ProjectFile {
+  id: string;
+  projectId: string;
+  path: string;
+  content: string;
+  language: string;
+  size: number;
+  updatedAt: number;
+}
+
+export interface ProjectCheckpoint {
+  id: string;
+  projectId: string;
+  label: string;
+  files: Array<Pick<ProjectFile, 'path' | 'content' | 'language'>>;
+  createdAt: number;
+}
+
+export interface ProjectToolCall {
+  id: string;
+  name: string;
+  status: 'waiting' | 'running' | 'paused' | 'completed' | 'failed';
+  inputSummary: string;
+  outputSummary?: string;
+  startedAt: number;
+  finishedAt?: number;
+}
+
+export interface ProjectEvent {
+  id: string;
+  projectId: string;
+  type: 'user' | 'assistant' | 'tool' | 'checkpoint' | 'error';
+  content: string;
+  toolCall?: ProjectToolCall;
+  createdAt: number;
+}
+
+export interface PluginCompatibilityReport {
+  level: PluginCompatibility;
+  reasons: string[];
+  requiresBridge: boolean;
+  supportedFeatures: string[];
+  unsupportedFeatures: string[];
+}
+
+export interface PluginManifest {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  format: PluginFormat;
+  sourceUrl: string;
+  sourceRef?: string;
+  integrity?: string;
+  license?: string;
+  author?: string;
+  permissions: PluginPermission[];
+  compatibility: PluginCompatibilityReport;
+  categories: string[];
+  featured?: boolean;
+}
+
+export interface MarketplaceSource {
+  id: string;
+  name: string;
+  url: string;
+  authority: 'official' | 'verified-community' | 'custom';
+  enabled: boolean;
+  updatedAt: number;
+}
+
+export interface PluginInstallRecord {
+  id: string;
+  pluginId: string;
+  manifest: PluginManifest;
+  enabled: boolean;
+  installScope: 'global' | 'project';
+  projectId?: string;
+  installedAt: number;
+  updatedAt: number;
+  state: 'installed' | 'disabled' | 'update-available' | 'failed' | 'pending-device-install';
+  previousManifest?: PluginManifest;
+}
+
+export interface PreparationTrace {
+  startedAt: number;
+  acceptedAt: number;
+  upstreamConnectedAt?: number;
+  firstTokenAt?: number;
+  phases: Array<{ name: string; startedAt: number; finishedAt?: number; status: 'running' | 'completed' | 'timed-out' | 'skipped' }>;
+}
 
 export interface ProviderCapabilities {
   responses: boolean;
@@ -203,6 +317,8 @@ export interface ChatMessage {
   skillIds?: string[];
   skillExecutions?: SkillExecution[];
   artifacts?: GeneratedArtifact[];
+  deliveryStatus?: 'preparing' | 'streaming' | 'sent' | 'failed' | 'cancelled';
+  deliveryError?: string;
 }
 
 export interface ConversationMemory {
@@ -335,6 +451,14 @@ export interface GlmQueueStatus {
 }
 
 export type StreamEvent =
+  | { type: 'accepted'; requestId: string; at: number }
+  | { type: 'preparing'; phase: string; at: number }
+  | { type: 'upstream_connected'; at: number }
+  | { type: 'first_token'; at: number }
+  | { type: 'tool_call'; toolCall: ProjectToolCall }
+  | { type: 'checkpoint'; checkpointId: string; label: string }
+  | { type: 'plugin_status'; pluginId: string; status: string }
+  | { type: 'timing'; trace: PreparationTrace }
   | { type: 'meta'; routeReason?: string; citations?: KnowledgeCitation[] }
   | { type: 'queue'; status: GlmQueueStatus }
   | { type: 'delta'; text: string }

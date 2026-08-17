@@ -9,12 +9,14 @@ import { ArtifactPanel } from './components/ArtifactPanel';
 import { useAppStore } from './store';
 import { OnboardingWizard } from './components/OnboardingWizard';
 import { UserMenu } from './components/UserMenu';
+import { ViewErrorBoundary } from './components/ViewErrorBoundary';
 
 const ChatView = lazy(() => import('./components/ChatView').then((module) => ({ default: module.ChatView })));
 const KnowledgeView = lazy(() => import('./components/KnowledgeView').then((module) => ({ default: module.KnowledgeView })));
 const BatchView = lazy(() => import('./components/BatchView').then((module) => ({ default: module.BatchView })));
 const SettingsDrawer = lazy(() => import('./components/SettingsDrawer').then((module) => ({ default: module.SettingsDrawer })));
 const AdminView = lazy(() => import('./components/AdminView').then((module) => ({ default: module.AdminView })));
+const ProjectView = lazy(() => import('./components/ProjectView').then((module) => ({ default: module.ProjectView })));
 
 export default function App() {
   const mainColumnRef = useRef<HTMLElement>(null);
@@ -34,6 +36,11 @@ export default function App() {
   const profile = profiles.find((item) => item.id === conversation?.providerProfileId) ?? profiles[0];
 
   useEffect(() => { void initialize(); }, [initialize]);
+  useEffect(() => {
+    const syncPath = () => useAppStore.setState({ view: location.pathname === '/project' ? 'project' : 'chat', sidebarOpen: false });
+    window.addEventListener('popstate', syncPath);
+    return () => window.removeEventListener('popstate', syncPath);
+  }, []);
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     const apply = () => {
@@ -56,7 +63,7 @@ export default function App() {
   }
   if (auth.authenticated && auth.user?.onboardingStatus === 'required') return <OnboardingWizard />;
 
-  const pageTitle = view === 'chat' ? conversation.title : view === 'knowledge' ? '资料库' : view === 'batch' ? '批处理工作台' : '管理员后台';
+  const pageTitle = view === 'chat' ? conversation.title : view === 'project' ? '工程模式' : view === 'knowledge' ? '资料库' : view === 'batch' ? '批处理工作台' : '管理员后台';
 
   return (
     <div className={`app-shell ${sidebarCollapsed ? 'sidebar-is-collapsed' : ''} ${artifactPanelOpen ? 'artifact-is-open' : ''}`}>
@@ -75,9 +82,11 @@ export default function App() {
             <UserMenu />
           </div>
         </header>
-        <Suspense fallback={<div className="view-loading">正在加载工作区…</div>}>
-          {view === 'chat' ? <ChatView /> : view === 'knowledge' ? <KnowledgeView /> : view === 'batch' ? <BatchView /> : <AdminView />}
-        </Suspense>
+        <ViewErrorBoundary key={view}>
+          <Suspense fallback={<div className="view-loading">正在加载工作区…</div>}>
+            {view === 'chat' ? <ChatView /> : view === 'project' ? <ProjectView /> : view === 'knowledge' ? <KnowledgeView /> : view === 'batch' ? <BatchView /> : <AdminView />}
+          </Suspense>
+        </ViewErrorBoundary>
       </section>
       <ArtifactPanel />
       {settingsOpen ? <Suspense fallback={null}><SettingsDrawer /></Suspense> : null}

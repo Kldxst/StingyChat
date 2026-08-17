@@ -1,6 +1,7 @@
 import { ArrowUp, BrainCircuit, FileCode2, FileText, Globe2, LoaderCircle, Paperclip, Sparkles, WandSparkles, X } from 'lucide-react';
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { Square } from 'lucide-react';
 import type { ChatAttachment, ProviderProfile } from '../types';
 import { useAppStore } from '../store';
 import { IconButton } from './ui';
@@ -17,6 +18,7 @@ export function Composer({
   onOptimize,
   replacement,
   onReplacementApplied,
+  onStop,
 }: {
   conversationId: string;
   profile: ProviderProfile;
@@ -25,6 +27,7 @@ export function Composer({
   onOptimize: (text: string) => Promise<void>;
   replacement?: string;
   onReplacementApplied?: () => void;
+  onStop?: () => void;
 }) {
   const reduceMotion = useReducedMotion();
   const [text, setText] = useState('');
@@ -243,8 +246,13 @@ export function Composer({
               <Globe2 size={15} /> 联网
             </button>
           </div>
-          <IconButton label="发送" className="send-button" onClick={() => void submit()} disabled={(!text.trim() && !attachments.length) || busy}>
-            {busy ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={18} />}
+          <IconButton
+            label={busy ? '停止生成' : '发送'}
+            className={`send-button${busy ? ' is-stop' : ''}`}
+            onClick={() => busy ? onStop?.() : void submit()}
+            disabled={!busy && (!text.trim() && !attachments.length)}
+          >
+            {busy ? <Square size={15} fill="currentColor" /> : <ArrowUp size={18} />}
           </IconButton>
         </div>
       </div>

@@ -35,6 +35,7 @@ import {
 } from '../lib/semantic';
 import { estimateMessages, estimateTokens, estimateTokensForModel } from '../lib/tokens';
 import { estimateAttachmentTokens } from '../lib/tokenLedger';
+import { heuristicTokenEstimate, withinDeadline } from '../lib/preparation';
 import { autoSelectSkillIds, buildSkillsPrompt, executePostflightSkills, executePreflightSkills, skillName } from '../lib/skills';
 import { captureClientRuntimeContext, runtimeContextPrompt } from '../lib/runtimeContext';
 import { requiresUserApiKey } from '../lib/providerAuth';
@@ -60,6 +61,9 @@ interface PromptPreview {
 
 interface CacheProposal {
   prompt: string;
+  userMessageId: string;
+  attachments: ChatAttachment[];
+  skillIds: string[];
   candidate: SemanticCacheEntry;
   fingerprint: string;
   routeReason?: string;
@@ -200,7 +204,6 @@ export function ChatView() {
   const settings = useAppStore((state) => state.settings);
   const personalization = useAppStore((state) => state.personalization);
   const appendMessage = useAppStore((state) => state.appendMessage);
-  const appendMessages = useAppStore((state) => state.appendMessages);
   const updateConversation = useAppStore((state) => state.updateConversation);
   const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
   const setActiveArtifact = useAppStore((state) => state.setActiveArtifact);
@@ -215,7 +218,7 @@ export function ChatView() {
   const [liveReasoning, setLiveReasoning] = useState('');
   const [error, setError] = useState('');
   const [errorDetails, setErrorDetails] = useState<string[]>([]);
-  const [pendingUser, setPendingUser] = useState<ChatMessage>();
+  const [preparationPhase, setPreparationPhase] = useState('');
   const [preview, setPreview] = useState<PromptPreview>();
   const [sentPromptPreview, setSentPromptPreview] = useState<ChatMessage>();
   const [replacement, setReplacement] = useState<string>();
@@ -228,6 +231,8 @@ export function ChatView() {
   const revealQueueRef = useRef<string[]>([]);
   const revealTextRef = useRef('');
   const revealFrameRef = useRef<number | undefined>(undefined);
+  const abortRef = useRef<AbortController | undefined>(undefined);
+  const skipEnhancementRef = useRef<(() => void) | undefined>(undefined);
   const clearReplacement = useCallback(() => setReplacement(undefined), []);
   const quickPrompts = useMemo(() => quickPromptsFor(conversation?.id ?? ''), [conversation?.id]);
 
@@ -268,7 +273,8 @@ export function ChatView() {
     if (revealFrameRef.current !== undefined) return;
     const paint = () => {
       const queued = revealQueueRef.current.length;
-      const count = Math.min(queued, Math.max(12, Math.min(240, Math.ceil(queued / 7))));
+      // Drain a burst in at most five frames so rendering does not lag a fast upstream.
+      const count = Math.min(queued, Math.max(12, Math.ceil(queued / 5)));
       if (count) {
         revealTextRef.current += revealQueueRef.current.splice(0, count).join('');
         setLiveText(revealTextRef.current);
@@ -319,7 +325,17 @@ export function ChatView() {
     }
   };
 
-  const sendMessage = async (rawPrompt: string, attachments: ChatAttachment[] = [], skillIds: string[] = [], skipCache = false): Promise<boolean> => {
+  const patchDelivery = useCallback((conversationId: string, messageId: string, status: ChatMessage['deliveryStatus'], deliveryError?: string) => {
+    const current = useAppStore.getState().conversations.find((item) => item.id === conversationId);
+    if (!current) return;
+    void updateConversation(conversationId, {
+      messages: current.messages.map((message) => message.id === messageId
+        ? { ...message, deliveryStatus: status, deliveryError }
+        : message),
+    });
+  }, [updateConversation]);
+
+  const sendMessage = async (rawPrompt: string, attachments: ChatAttachment[] = [], skillIds: string[] = [], skipCache = false, retryMessageId?: string): Promise<boolean> => {
     if (!conversation || !profile || busy) return false;
     shouldFollowRef.current = true;
     scrollToBottom();
@@ -328,25 +344,41 @@ export function ChatView() {
     setErrorDetails([]);
     setLiveText('');
     setLiveReasoning('');
+    setPreparationPhase('正在接收消息');
+    const controller = new AbortController();
+    abortRef.current = controller;
     revealQueueRef.current = [];
     revealTextRef.current = '';
     const autoSkillIds = settings.autoSkills ? autoSelectSkillIds(rawPrompt, attachments) : [];
     const effectiveSkillIds = [...new Set([...skillIds, ...autoSkillIds])];
-    const transientUser = makeMessage('user', rawPrompt, attachments, effectiveSkillIds);
-    setPendingUser(transientUser);
+    const transientUser = retryMessageId
+      ? { ...useAppStore.getState().conversations.find((item) => item.id === conversation.id)?.messages.find((item) => item.id === retryMessageId)!, deliveryStatus: 'preparing' as const, deliveryError: undefined }
+      : { ...makeMessage('user', rawPrompt, attachments, effectiveSkillIds), deliveryStatus: 'preparing' as const };
+    if (!retryMessageId) await appendMessage(conversation.id, transientUser);
+    else patchDelivery(conversation.id, transientUser.id, 'preparing');
     try {
       const assistContext = [memoryToPrompt(conversation.memory), ...conversation.messages.slice(-6).map((message) => `${message.role}: ${message.content}`)]
         .filter(Boolean).join('\n').slice(-20_000);
-      const routePromise = chooseRoute(rawPrompt);
+      setPreparationPhase('正在选择能力与上下文');
+      const routePromise = withinDeadline(chooseRoute(rawPrompt), 300, { profile, reason: '路由超时，沿用当前模型' }, controller.signal);
       const retrievalPromise = settings.jitRetrieval ? retrieveKnowledge(rawPrompt, settings.retrievalTopK) : Promise.resolve([]);
       const knowledgeLengthPromise = settings.jitRetrieval ? knowledgeCorpusTextLength() : Promise.resolve(0);
       const cachePromptPromise = settings.semanticHitEnhancement
         ? normalizeForSemanticCache(rawPrompt, assistContext).catch(() => rawPrompt)
         : Promise.resolve(rawPrompt);
       const skillsPromise = executePreflightSkills(effectiveSkillIds, rawPrompt, attachments);
-      const [route, retrieved, knowledgeTextLength, cachePrompt, skillRun] = await Promise.all([
-        routePromise, retrievalPromise, knowledgeLengthPromise, cachePromptPromise, skillsPromise,
+      const [routeResult, retrievalResult, knowledgeResult, cacheResult, skillsResult] = await Promise.all([
+        routePromise,
+        withinDeadline(retrievalPromise, 150, [], controller.signal),
+        withinDeadline(knowledgeLengthPromise, 80, 0, controller.signal),
+        withinDeadline(cachePromptPromise, 250, rawPrompt, controller.signal),
+        withinDeadline(skillsPromise, 200, { skillIds: [], contextBlocks: [], executions: [] }, controller.signal),
       ]);
+      const route = routeResult.value;
+      const retrieved = retrievalResult.value;
+      const knowledgeTextLength = knowledgeResult.value;
+      const cachePrompt = cacheResult.value;
+      const skillRun = skillsResult.value;
       const apiKey = requiresUserApiKey(route.profile) ? await loadProviderSecret(route.profile.id) : '';
       if (requiresUserApiKey(route.profile) && !apiKey) {
         setSettingsOpen(true);
@@ -363,19 +395,21 @@ export function ChatView() {
       if (settings.semanticCache && !skipCache) {
         const candidate = await findCacheCandidate(conversation.id, fingerprint, cachePrompt);
         if (candidate) {
-          const match = await validateCacheMatch(cachePrompt, candidate.prompt, fingerprint).catch(() => ({
+          const matchResult = await withinDeadline(validateCacheMatch(cachePrompt, candidate.prompt, fingerprint).catch(() => ({
             equivalent: false,
             reason: '验证失败',
-          }));
+          })), 220, { equivalent: false, reason: '缓存判定超时' }, controller.signal);
+          const match = matchResult.value;
           if (match.equivalent) {
-            setCacheProposal({ prompt: rawPrompt, candidate, fingerprint, routeReason: route.reason });
+            setCacheProposal({ prompt: rawPrompt, userMessageId: transientUser.id, attachments, skillIds: effectiveSkillIds, candidate, fingerprint, routeReason: route.reason });
+            patchDelivery(conversation.id, transientUser.id, 'sent');
             return true;
           }
         }
       }
 
       const optimized = optimizePromptLocally(rawPrompt, settings);
-      let memory = conversation.memory;
+      const memory = conversation.memory;
       const rawHistory = [...conversation.messages, makeMessage('user', rawPrompt, attachments)];
       const initialSelection = selectContext(
         rawHistory,
@@ -383,21 +417,7 @@ export function ChatView() {
         route.profile.contextWindow,
         settings.compressionThreshold,
       );
-      if (settings.automaticContextCompression && initialSelection.shouldCompress) {
-        const compressible = rawHistory.slice(0, Math.max(0, rawHistory.length - 4));
-        if (compressible.length >= 2) {
-          try {
-            memory = await compressConversation(
-              compressible.map(({ role, content }) => ({ role, content })),
-              memoryToPrompt(memory),
-            );
-            memory.compressedThroughMessageId = compressible.at(-1)?.id;
-            await updateConversation(conversation.id, { memory });
-          } catch {
-            route.reason = [route.reason, '摘要失败，使用滑动窗口'].filter(Boolean).join(' · ');
-          }
-        }
-      }
+      if (initialSelection.shouldCompress) route.reason = [route.reason, '本轮使用显著性窗口，摘要将在后台更新'].filter(Boolean).join(' · ');
 
       const baseSystem = buildSystemPrompt([personalization?.systemPromptPrefix, conversation.systemPrompt].filter(Boolean).join('\n\n'), settings);
       const clientContext = captureClientRuntimeContext();
@@ -418,7 +438,21 @@ export function ChatView() {
             return `${image.name}：${description}`;
           }))
         : Promise.resolve([] as string[]);
-      const [auxiliaryReasoning, searched, imageBlocks] = await Promise.all([reasoningPromise, searchPromise, imagePromise]);
+      const needsFallback = settings.reasoningEnabled && !route.profile.capabilities.reasoning
+        || settings.webSearch && !route.profile.capabilities.webSearch
+        || attachments.some((attachment) => attachment.kind === 'image') && !route.profile.capabilities.vision;
+      if (needsFallback) setPreparationPhase('正在执行必要的兼容增强');
+      let skip!: () => void;
+      const skipped = new Promise<'skip'>((resolve) => { skip = () => resolve('skip'); });
+      const aborted = new Promise<never>((_resolve, reject) => controller.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
+      skipEnhancementRef.current = skip;
+      const enhanced = await Promise.race([
+        Promise.all([reasoningPromise, searchPromise, imagePromise]),
+        skipped.then(() => ['', { text: '', citations: [] as KnowledgeCitation[] }, [] as string[]] as const),
+        aborted,
+      ]);
+      skipEnhancementRef.current = undefined;
+      const [auxiliaryReasoning, searched, imageBlocks] = enhanced;
       if (auxiliaryReasoning) setLiveReasoning(auxiliaryReasoning);
       const webBlock = searched.text;
       citations = [...searched.citations, ...citations].slice(0, 20);
@@ -449,12 +483,16 @@ export function ChatView() {
       const fullKnowledgeTokens = Math.ceil(knowledgeTextLength / 3);
       const baselineText = [conversation.systemPrompt, ...rawHistory.map((message) => `${message.role}: ${message.content}`)].join('\n');
       const sentText = [systemPrompt, ...selection.messages.map((message) => `${message.role}: ${message.content}`)].join('\n');
-      const [baselineEstimate, sentEstimate, rawPromptEstimate, optimizedPromptEstimate] = await Promise.all([
-        estimateTokensForModel(baselineText, route.profile.model),
-        estimateTokensForModel(sentText, route.profile.model),
-        estimateTokensForModel(rawPrompt, route.profile.model),
-        estimateTokensForModel(optimized.optimized, route.profile.model),
+      const [baselineResult, sentResult, rawPromptResult, optimizedPromptResult] = await Promise.all([
+        withinDeadline(estimateTokensForModel(baselineText, route.profile.model), 60, { tokens: heuristicTokenEstimate(baselineText), source: 'heuristic' as const }, controller.signal),
+        withinDeadline(estimateTokensForModel(sentText, route.profile.model), 60, { tokens: heuristicTokenEstimate(sentText), source: 'heuristic' as const }, controller.signal),
+        withinDeadline(estimateTokensForModel(rawPrompt, route.profile.model), 60, { tokens: heuristicTokenEstimate(rawPrompt), source: 'heuristic' as const }, controller.signal),
+        withinDeadline(estimateTokensForModel(optimized.optimized, route.profile.model), 60, { tokens: heuristicTokenEstimate(optimized.optimized), source: 'heuristic' as const }, controller.signal),
       ]);
+      const baselineEstimate = baselineResult.value;
+      const sentEstimate = sentResult.value;
+      const rawPromptEstimate = rawPromptResult.value;
+      const optimizedPromptEstimate = optimizedPromptResult.value;
       const baseline = baselineEstimate.tokens + fullAttachmentTokens + fullKnowledgeTokens;
       const nativeImageTokens = route.profile.capabilities.vision
         ? estimateAttachmentTokens(attachments.filter((attachment) => attachment.kind === 'image'))
@@ -495,6 +533,8 @@ export function ChatView() {
       let reasoning = '';
       let usage: TokenTelemetry | undefined;
       let responseCitations: KnowledgeCitation[] = citations;
+      setPreparationPhase('正在连接模型');
+      patchDelivery(conversation.id, transientUser.id, 'streaming');
       await streamChat(
         {
           conversationId: conversation.id,
@@ -511,7 +551,10 @@ export function ChatView() {
         },
         apiKey ?? '',
         (event) => {
-          if (event.type === 'delta') {
+          if (event.type === 'accepted') setPreparationPhase('请求已接收');
+          else if (event.type === 'upstream_connected') setPreparationPhase('模型已连接');
+          else if (event.type === 'first_token') setPreparationPhase('正在生成');
+          else if (event.type === 'delta') {
             answer += event.text;
             revealQueueRef.current.push(...Array.from(event.text));
             scheduleReveal();
@@ -522,6 +565,7 @@ export function ChatView() {
           else if (event.type === 'meta' && event.citations) responseCitations = event.citations;
           else if (event.type === 'error') throw new Error(event.message);
         },
+        controller.signal,
       );
       if (!answer.trim()) throw new Error('Provider 没有返回文本内容');
       if (revealFrameRef.current !== undefined) cancelAnimationFrame(revealFrameRef.current);
@@ -538,7 +582,8 @@ export function ChatView() {
       const postflight = executePostflightSkills(skillRun.skillIds, answer, assistantMessage.id);
       assistantMessage.artifacts = postflight.artifacts;
       assistantMessage.skillExecutions = [...skillRun.executions, ...postflight.executions];
-      await appendMessages(conversation.id, [userMessage, assistantMessage]);
+      await appendMessage(conversation.id, assistantMessage);
+      patchDelivery(conversation.id, userMessage.id, 'sent');
       if (assistantMessage.artifacts.length) setActiveArtifact(assistantMessage.artifacts[0].id);
       setLiveText('');
       setLiveReasoning('');
@@ -556,10 +601,22 @@ export function ChatView() {
           .catch(() => fallbackTitle)
           .then((title) => updateConversation(conversation.id, { title: title || fallbackTitle, titleGenerated: true }));
       }
+      if (settings.automaticContextCompression && initialSelection.shouldCompress) {
+        const compressible = rawHistory.slice(0, Math.max(0, rawHistory.length - 4));
+        if (compressible.length >= 2) void compressConversation(
+          compressible.map(({ role, content }) => ({ role, content })),
+          memoryToPrompt(memory),
+        ).then((nextMemory) => updateConversation(conversation.id, {
+          memory: { ...nextMemory, compressedThroughMessageId: compressible.at(-1)?.id },
+        })).catch(() => undefined);
+      }
       return true;
     } catch (caught) {
       revealQueueRef.current = [];
-      setError(caught instanceof Error ? caught.message : '发送失败');
+      const cancelled = caught instanceof DOMException && caught.name === 'AbortError';
+      const message = cancelled ? '已停止生成' : caught instanceof Error ? caught.message : '发送失败';
+      setError(message);
+      patchDelivery(conversation.id, transientUser.id, cancelled ? 'cancelled' : 'failed', message);
       if (caught instanceof ChatResponseError) {
         setErrorDetails(caught.issues?.map((issue) => `${issue.path || 'request'}：${issue.message}`) ?? []);
       }
@@ -567,14 +624,15 @@ export function ChatView() {
       setLiveReasoning('');
       return false;
     } finally {
-      setPendingUser(undefined);
+      abortRef.current = undefined;
+      skipEnhancementRef.current = undefined;
+      setPreparationPhase('');
       setBusy(false);
     }
   };
 
   const acceptCache = async () => {
     if (!conversation || !cacheProposal) return;
-    const user = makeMessage('user', cacheProposal.prompt);
     const assistant = makeMessage('assistant', cacheProposal.candidate.answer);
     const estimate = estimateMessages([...conversation.messages, makeMessage('user', cacheProposal.prompt)])
       + estimateTokens(conversation.systemPrompt);
@@ -596,8 +654,8 @@ export function ChatView() {
       savings: { promptCompression: 0, contextPruning: 0, jitRetrieval: 0, semanticCache: estimate, promptCache: 0 },
     };
     assistant.routeReason = '复用同会话语义缓存';
-    await appendMessage(conversation.id, user);
     await appendMessage(conversation.id, assistant);
+    patchDelivery(conversation.id, cacheProposal.userMessageId, 'sent');
     setCacheProposal(undefined);
   };
 
@@ -651,6 +709,14 @@ export function ChatView() {
                   </details>
                 ) : null}
                 <MarkdownContent>{message.content}</MarkdownContent>
+                {message.role === 'user' && (message.deliveryStatus === 'failed' || message.deliveryStatus === 'cancelled') ? (
+                  <div className="delivery-failed">
+                    <small>{message.deliveryError || '发送未完成'}</small>
+                    <button onClick={() => void sendMessage(message.content, message.attachments ?? [], message.skillIds ?? [], false, message.id)}>
+                      <RotateCcw size={13} /> 原地重试
+                    </button>
+                  </div>
+                ) : null}
                 {message.attachments?.length ? (
                   <div className="message-attachments">
                     {message.attachments.map((attachment) => attachment.kind === 'image' && attachment.dataUrl
@@ -696,12 +762,6 @@ export function ChatView() {
             </motion.article>
           ))}
         </AnimatePresence>
-        {pendingUser ? (
-          <article className="message user is-pending" aria-label="正在发送的消息">
-            <div className="message-avatar"><User size={16} /></div>
-            <div className="message-body"><MarkdownContent>{pendingUser.content}</MarkdownContent><small className="pending-label">正在准备请求…</small></div>
-          </article>
-        ) : null}
         {liveText || liveReasoning ? (
           <article className="message assistant is-streaming">
             <div className="message-avatar"><Bot size={16} /></div>
@@ -717,7 +777,7 @@ export function ChatView() {
           </article>
         ) : null}
         {busy && !liveText && !liveReasoning ? (
-          <div className="thinking-line"><LoaderCircle size={16} className="spin" /> 正在组织上下文</div>
+          <div className="thinking-line"><LoaderCircle size={16} className="spin" /> {preparationPhase || '正在准备'}{skipEnhancementRef.current ? <button onClick={() => skipEnhancementRef.current?.()}>立即发送，跳过增强</button> : null}</div>
         ) : null}
         {error ? <div className="inline-error"><b>{error}</b>{errorDetails.length ? <details><summary>查看不兼容字段</summary>{errorDetails.map((detail) => <p key={detail}>{detail}</p>)}</details> : null}<small>输入和附件仍保留在编辑框中，可修改后重试。</small></div> : null}
         </div>
@@ -731,6 +791,7 @@ export function ChatView() {
         onOptimize={requestOptimization}
         replacement={replacement}
         onReplacementApplied={clearReplacement}
+        onStop={() => abortRef.current?.abort()}
       />
 
       <Modal open={Boolean(preview)} title="提示词优化" onClose={() => setPreview(undefined)} wide>
@@ -780,7 +841,10 @@ export function ChatView() {
         ) : null}
       </Modal>
 
-      <Modal open={Boolean(cacheProposal)} title="发现可复用回答" onClose={() => setCacheProposal(undefined)}>
+      <Modal open={Boolean(cacheProposal)} title="发现可复用回答" onClose={() => {
+        if (cacheProposal) patchDelivery(conversation.id, cacheProposal.userMessageId, 'failed', '已取消缓存选择');
+        setCacheProposal(undefined);
+      }}>
         {cacheProposal ? (
           <div className="modal-content">
             <p>同一会话状态下有一个语义等价的历史提问。复用不会调用聊天 Provider。</p>
@@ -789,9 +853,9 @@ export function ChatView() {
               <button
                 className="secondary-button"
                 onClick={() => {
-                  const prompt = cacheProposal.prompt;
+                  const proposal = cacheProposal;
                   setCacheProposal(undefined);
-                  void sendMessage(prompt, [], [], true);
+                  void sendMessage(proposal.prompt, proposal.attachments, proposal.skillIds, true, proposal.userMessageId);
                 }}
               >
                 <RotateCcw size={14} /> 重新生成

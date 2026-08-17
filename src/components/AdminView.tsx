@@ -18,7 +18,7 @@ async function adminRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const payload = await response.json().catch(() => ({})) as T & { error?: string };
   if (!response.ok) throw new Error(payload.error ?? `请求失败 (${response.status})`); return payload;
 }
-const FEATURES: Array<[FeaturePermission, string]> = [['skills','Skills'],['smart_assist','智能辅助'],['reasoning','思考'],['web_search','联网'],['model_routing','模型路由'],['batch','批处理'],['history_sync','历史同步']];
+const FEATURES: Array<[FeaturePermission, string]> = [['skills','Skills'],['smart_assist','智能辅助'],['reasoning','思考'],['web_search','联网'],['model_routing','模型路由'],['batch','批处理'],['history_sync','历史同步'],['project_mode','工程模式'],['project_full_access','工程完全访问'],['plugin_install','插件安装'],['plugin_source_manage','插件源管理'],['mcp_connect','MCP 连接']];
 const TABS: Array<[Tab, string, typeof Gauge]> = [['overview','仪表盘',Gauge],['users','用户',Users],['restrictions','网络限制',Ban],['chats','聊天审计',Database],['audit','操作日志',FileClock]];
 function bytes(value: number) { return `${(value / 1024 / 1024).toFixed(value > 10 * 1024 * 1024 ? 0 : 1)} MB`; }
 

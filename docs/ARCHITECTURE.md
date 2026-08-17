@@ -1,5 +1,7 @@
 # 架构与工作原理
 
+工程模式、本地桥与 Codex/DeepSeek Harness 插件适配的详细边界见 [PROJECT_MODE.md](PROJECT_MODE.md)。
+
 ## 请求链路
 
 1. 浏览器从 IndexedDB 读取会话、设置、长期记忆、资料索引和加密凭据。

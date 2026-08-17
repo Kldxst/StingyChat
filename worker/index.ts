@@ -40,6 +40,8 @@ import {
   validMutationOrigin,
 } from './auth';
 import { conversationSyncSchema, deleteCloudConversation, exportCloudData, getCloudConversation, listCloudConversations, syncCloudConversation } from './history';
+import { CURATED_PLUGINS, DEFAULT_MARKETPLACE_SOURCES, marketplaceResolveSchema, resolveMarketplaceManifest } from './marketplace';
+import { projectAgentSchema, runProjectAgent } from './project';
 
 type AppEnvironment = { Bindings: WorkerEnv; Variables: { auth?: Awaited<ReturnType<typeof resolveSession>> } };
 const app = new Hono<AppEnvironment>();
@@ -137,6 +139,9 @@ app.use('*', async (context, next) => {
     }
   }
   await next();
+  // Static Assets responses expose an immutable Headers object. Clone every
+  // response before applying the shared security policy.
+  context.res = new Response(context.res.body, context.res);
   for (const [name, value] of Object.entries(securityHeaders())) context.res.headers.set(name, value);
 });
 
@@ -232,6 +237,47 @@ app.delete('/api/conversations/:id', async (context) => {
 });
 
 app.get('/favicon.ico', (context) => context.body(null, 204));
+
+app.get('/api/marketplace/catalog', (context) => context.json({ plugins: CURATED_PLUGINS, sources: DEFAULT_MARKETPLACE_SOURCES, refreshedAt: Date.now(), cacheTtlMs: 6 * 60 * 60 * 1_000 }));
+app.get('/api/marketplace/plugins/:id', (context) => {
+  const plugin = CURATED_PLUGINS.find((item) => item.id === context.req.param('id'));
+  return plugin ? context.json(plugin) : context.json({ error: '插件不存在' }, 404);
+});
+app.get('/api/marketplace/security-advisories', async (context) => {
+  const db = appDatabase(context.env);
+  if (!db) return context.json({ advisories: [] });
+  const rows = await db.prepare('SELECT id,plugin_id,affected_versions,severity,summary,published_at_ms FROM marketplace_security_advisories ORDER BY published_at_ms DESC LIMIT 200').all();
+  return context.json({ advisories: rows.results ?? [] });
+});
+app.post('/api/marketplace/resolve', requirePermission('plugin_install'), async (context) => {
+  const parsed = marketplaceResolveSchema.safeParse(await context.req.json().catch(() => undefined));
+  if (!parsed.success) return context.json({ error: '插件来源请求无效' }, 400);
+  return context.json({ ...(await resolveMarketplaceManifest(parsed.data.url)), format: parsed.data.format });
+});
+
+app.post('/api/project/agent/step', requirePermission('project_mode'), async (context) => {
+  const parsed = projectAgentSchema.safeParse(await context.req.json().catch(() => undefined));
+  if (!parsed.success) return context.json({ error: '工程任务请求无效', issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message })) }, 400);
+  if (parsed.data.permissionMode === 'full' && !hasPermission(context.get('auth')!.user!, 'project_full_access')) return context.json({ error: '当前账号没有工程完全访问权限' }, 403);
+  const options = internalGlmOptions(context, 'project-agent');
+  return context.json(await runProjectAgent(context.env, parsed.data, options.personalAssistant, options.requestId));
+});
+
+const projectMetadataSchema = z.object({ id: z.string().uuid(), name: z.string().min(1).max(200), permissionMode: z.enum(['read','workspace','full']), status: z.enum(['active','archived']).default('active'), model: z.string().max(200).optional(), contentFingerprint: z.string().max(200).optional() });
+app.get('/api/project/metadata', requirePermission('project_mode'), async (context) => {
+  const db = appDatabase(context.env); const user = context.get('auth')!.user!;
+  if (!db) return context.json({ projects: [] });
+  const rows = await db.prepare('SELECT id,name,permission_mode,status,model,content_fingerprint,created_at_ms,updated_at_ms FROM project_metadata WHERE user_id=? ORDER BY updated_at_ms DESC LIMIT 200').bind(user.id).all();
+  return context.json({ projects: rows.results ?? [] });
+});
+app.put('/api/project/metadata', requirePermission('project_mode'), async (context) => {
+  const parsed = projectMetadataSchema.safeParse(await context.req.json().catch(() => undefined));
+  if (!parsed.success) return context.json({ error: '项目元数据无效' }, 400);
+  const db = appDatabase(context.env); const user = context.get('auth')!.user!; if (!db) return context.json({ error: '项目数据库尚未配置' }, 503);
+  const now = Date.now();
+  await db.prepare('INSERT INTO project_metadata (id,user_id,name,permission_mode,status,model,content_fingerprint,created_at_ms,updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,permission_mode=excluded.permission_mode,status=excluded.status,model=excluded.model,content_fingerprint=excluded.content_fingerprint,updated_at_ms=excluded.updated_at_ms WHERE user_id=excluded.user_id').bind(parsed.data.id,user.id,parsed.data.name,parsed.data.permissionMode,parsed.data.status,parsed.data.model ?? null,parsed.data.contentFingerprint ?? null,now,now).run();
+  return context.json({ ok: true, updatedAt: now });
+});
 
 app.get('/api/assist/queue/:requestId', async (context) => {
   const requestId = context.req.param('requestId');
@@ -388,7 +434,7 @@ app.put('/api/admin/users/:id/permissions', async (context) => {
   const actor = context.get('auth')!.user!; if (!hasPermission(actor, 'admin_users_write')) return context.json({ error: '没有权限管理权限' }, 403);
   const body = await context.req.json<{ permissions?: Array<{ permission: FeaturePermission; allowed: boolean }> }>().catch((): { permissions?: Array<{ permission: FeaturePermission; allowed: boolean }> } => ({})); const target = await targetUser(context, context.req.param('id'));
   if (!target || !Array.isArray(body.permissions) || target.role === 'owner') return context.json({ error: '权限变更请求无效' }, 400);
-  const allowedPermissions = new Set<FeaturePermission>(['skills','smart_assist','reasoning','web_search','model_routing','batch','history_sync','admin_users_read','admin_restrictions_read','admin_usage_read']);
+  const allowedPermissions = new Set<FeaturePermission>(['skills','smart_assist','reasoning','web_search','model_routing','batch','history_sync','project_mode','project_full_access','plugin_install','mcp_connect','admin_users_read','admin_restrictions_read','admin_usage_read']);
   const statements = body.permissions.filter((item) => allowedPermissions.has(item.permission)).map((item) => appDatabase(context.env)!.prepare(`INSERT INTO user_permission_overrides (user_id,permission,allowed,updated_by,updated_at_ms) VALUES (?,?,?,?,?) ON CONFLICT(user_id,permission) DO UPDATE SET allowed=excluded.allowed,updated_by=excluded.updated_by,updated_at_ms=excluded.updated_at_ms`).bind(target.id, item.permission, item.allowed ? 1 : 0, actor.id, Date.now()));
   if (statements.length) await appDatabase(context.env)!.batch(statements); await writeAdminAudit(context, 'user.permissions', target.id, { count: statements.length }); return context.json({ ok: true });
 });

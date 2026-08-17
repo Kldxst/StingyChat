@@ -35,6 +35,10 @@ describe('Worker chat integration', () => {
     const text = await response.text();
     expect(response.status).toBe(200);
     expect(text).toContain('"type":"delta","text":"精简"');
+    expect(text).toContain('"type":"accepted"');
+    expect(text).toContain('"type":"upstream_connected"');
+    expect(text).toContain('"type":"first_token"');
+    expect(text).toContain('"type":"timing"');
     expect(text).not.toContain('"type":"reasoning_delta"');
     expect(text).toContain('"cachedTokens":4');
     expect(text).toContain('"estimatedSaved":19');
