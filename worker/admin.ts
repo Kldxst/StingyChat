@@ -1,47 +1,5 @@
 import type { WorkerEnv } from './glm';
 
-const encoder = new TextEncoder();
-
-function bytesToBase64Url(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/gu, '-').replace(/\//gu, '_').replace(/=+$/gu, '');
-}
-
-async function hmac(secret: string, value: string): Promise<string> {
-  const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  return bytesToBase64Url(new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(value))));
-}
-
-export async function createAdminToken(secret: string): Promise<string> {
-  const payload = bytesToBase64Url(encoder.encode(JSON.stringify({ exp: Date.now() + 2 * 60 * 60 * 1000 })));
-  return `${payload}.${await hmac(secret, payload)}`;
-}
-
-function timingSafeEqual(left: string, right: string): boolean {
-  const length = Math.max(left.length, right.length);
-  let difference = left.length ^ right.length;
-  for (let index = 0; index < length; index += 1) difference |= (left.charCodeAt(index) || 0) ^ (right.charCodeAt(index) || 0);
-  return difference === 0;
-}
-
-export async function verifyAdminPassword(candidate: string, secret?: string): Promise<boolean> {
-  if (!secret) return false;
-  return timingSafeEqual(await hmac(secret, candidate), await hmac(secret, secret));
-}
-
-export async function verifyAdminToken(token: string | undefined, secret?: string): Promise<boolean> {
-  if (!token || !secret) return false;
-  const [payload, signature] = token.split('.');
-  if (!payload || !signature || !timingSafeEqual(signature, await hmac(secret, payload))) return false;
-  try {
-    const decoded = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(payload.replace(/-/gu, '+').replace(/_/gu, '/')), (char) => char.charCodeAt(0)))) as { exp?: number };
-    return typeof decoded.exp === 'number' && decoded.exp > Date.now();
-  } catch {
-    return false;
-  }
-}
-
 function ipv4Number(value: string): number | undefined {
   const parts = value.split('.');
   if (parts.length !== 4) return undefined;

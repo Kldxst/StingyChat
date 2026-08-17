@@ -15,6 +15,24 @@ export type OutputContract = 'concise' | 'json' | 'code' | 'choice' | 'free';
 type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high';
 type MessageRole = 'user' | 'assistant' | 'system';
 export type ThemePreference = 'system' | 'light' | 'dark';
+export type UserRole = 'owner' | 'admin' | 'support' | 'member';
+export type UserStatus = 'active' | 'suspended';
+export type FeaturePermission =
+  | 'skills'
+  | 'smart_assist'
+  | 'reasoning'
+  | 'web_search'
+  | 'model_routing'
+  | 'batch'
+  | 'history_sync'
+  | 'admin_users_read'
+  | 'admin_users_write'
+  | 'admin_restrictions_read'
+  | 'admin_restrictions_write'
+  | 'admin_usage_read'
+  | 'admin_audit_read'
+  | 'admin_chat_read'
+  | 'admin_owner_actions';
 
 export interface ProviderCapabilities {
   responses: boolean;
@@ -75,6 +93,11 @@ export interface AuthUser {
   displayName: string;
   avatarUrl?: string;
   onboardingStatus: 'required' | 'pending' | 'complete';
+  role: UserRole;
+  permissions: FeaturePermission[];
+  status: UserStatus;
+  storageUsageBytes: number;
+  storageQuotaBytes: number;
 }
 
 export interface AuthSessionState {
@@ -204,6 +227,21 @@ export interface Conversation {
   createdAt: number;
   updatedAt: number;
   titleGenerated?: boolean;
+  namespace?: string;
+  revision?: number;
+  syncState?: 'synced' | 'pending' | 'local-only' | 'conflict';
+}
+
+export type SyncStatus = 'idle' | 'syncing' | 'pending' | 'offline' | 'error';
+
+export interface DataExportBundle {
+  schema: 'stingychat-export';
+  version: 1;
+  exportedAt: number;
+  settings: OptimizationSettings;
+  favoriteModels: FavoriteModel[];
+  personalization?: PersonalizationProfile;
+  conversations: Conversation[];
 }
 
 interface FewShotExample {

@@ -7,7 +7,17 @@
 3. JIT 检索只选择资料库与附件中最相关的 Top-K 片段。
 4. 上下文选择器组合稳定 System Prompt、结构化长期记忆、最近原文窗口、搜索摘要、辅助推演与检索片段。
 5. Worker 以 Provider 对应协议转发并把上游流统一为 `meta`、`delta`、`reasoning_delta`、`usage`、`done`、`error` SSE 事件。
-6. 浏览器逐字呈现回答，保存 Provider usage、引用、路由理由和节省账本。
+6. 浏览器逐字呈现回答，先写账号命名空间内的 IndexedDB，再由离线队列把可同步历史写入 D1。
+
+## 设置与历史同步
+
+设置开关采用乐观更新：Zustand 与 IndexedDB 在交互帧内更新，远端写入以 200ms 合并。任一时刻只有一个偏好请求在途；遇到 `409` 时以服务器版本为基准重放本地脏字段，断网或 5xx 则保留本地状态并自动重试。
+
+云端会话以 `revision` 做乐观并发，消息按 UUID 合并。附件提取文本与生成产物按 128KiB 分块；原始二进制、Provider Key、私人助手 Key 与 CryptoKey 永不上传。删除操作先硬删除正文，再写入 30 天无内容墓碑。每账号默认配额 100MB，超限内容继续保留在本机并标记为未同步。
+
+## OAuth RBAC
+
+OAuth 会话只使用 Secure、HttpOnly、SameSite=Lax Cookie。角色为 `owner/admin/support/member`，并可叠加单项权限覆盖。Worker 对 Skills、智能辅助、思考、联网、模型路由、批处理和历史同步逐项强制鉴权。`OWNER_CP_SUB` 在每次会话解析时强制 Owner 身份，Owner 不可降级、停用或删除；只有 Owner 可读取聊天正文和永久删除用户。
 
 浏览器还会把 ISO 时间、本地时间、IANA 时区、语言区域写入运行上下文；Worker 追加 Cloudflare 基于请求 IP 推断的城市、地区、国家和时区。该位置只用于改善地域相关回答，并明确标记为粗略推断。
 
@@ -51,4 +61,6 @@ TXT、Markdown、PDF、DOCX 在浏览器解析并分块。Dexie 保存文件元�
 - `worker/providers.ts`：Provider 请求映射、SSE 归一化、引用与 usage。
 - `worker/glm.ts`：GLM 任务协议与个人 Key 覆盖。
 - `worker/glmScheduler.ts`：FIFO、槽并发、429 断路器与流生命周期。
-- `worker/index.ts`：Hono 路由、安全中间件、管理员与批处理接口。
+- `worker/history.ts`：云端会话、分块载荷、配额、revision 与删除墓碑。
+- `worker/auth.ts`：CP OAuth、本地会话、RBAC 与加密个性偏好。
+- `worker/index.ts`：Hono 路由、权限中间件、管理与批处理接口。

@@ -30,7 +30,7 @@ npx wrangler d1 execute stingy-chat-admin --remote --file worker/schema.sql
 npx wrangler d1 migrations apply stingy-chat-admin --remote
 ```
 
-`migrations/0002_auth_preferences.sql` 只新增用户、会话和偏好表，不会删除现有管理数据。OAuth 与偏好同步依赖 `APP_DB`；兼容期结束后可删除 `ADMIN_DB` binding，但管理员模块应先迁移为读取 `APP_DB`。
+`migrations/0002_auth_preferences.sql` 新增 OAuth 用户、会话和偏好表；`0003_history_rbac.sql` 前向增加 RBAC、云端历史、分块载荷、删除墓碑、审计和用量表，不重建或清空现有数据。OAuth、偏好与历史同步依赖 `APP_DB`；兼容期结束后可删除 `ADMIN_DB` binding。
 
 ## 3. Durable Object
 
@@ -42,7 +42,7 @@ npx wrangler d1 migrations apply stingy-chat-admin --remote
 npx wrangler secret put GLM_API_KEY
 npx wrangler secret put FREE_GLM_API_KEY
 npx wrangler secret put GLM_FALLBACK_API_KEYS
-npx wrangler secret put ADMIN_PASSWORD
+npx wrangler secret put OWNER_CP_SUB
 npx wrangler secret put CP_OAUTH_CLIENT_ID
 npx wrangler secret put CP_OAUTH_CLIENT_SECRET
 npx wrangler secret put SESSION_SECRET
@@ -60,6 +60,8 @@ npx wrangler secret put PROFILE_ENCRYPTION_KEY
 Secret 不应出现在 `wrangler.jsonc`、`.dev.vars.example`、GitHub Actions 日志或 README。开发对话中曾出现的 Key 一律先撤销，不能作为生产 Secret 继续使用。
 
 `SESSION_SECRET` 和 `PROFILE_ENCRYPTION_KEY` 应分别使用独立的高熵随机值。前者签名十分钟 OAuth 状态并保护本地会话，后者派生 AES-GCM 密钥加密引导答案。
+
+`OWNER_CP_SUB` 必须取自已完成一次 CP OAuth 登录的部署者账号。部署顺序为：先备份 D1、应用 migration、写入该 Secret、部署并验证会话返回 `owner`，最后删除遗留的 `ADMIN_PASSWORD` Secret。
 
 ## 5. CP OAuth
 
@@ -92,7 +94,7 @@ Invoke-RestMethod https://YOUR_WORKER/api/health
 
 建议设置：
 
-- `/api/admin/login`：严格速率限制与 Bot 防护。
+- `/api/admin/*`：仅接受现有 HttpOnly OAuth 会话，并由 RBAC 权限中间件逐项校验。
 - `/api/assist/*`、`/api/conversation/compress`：按 IP 与会话限流。
 - `/api/auth/login`、`/api/auth/callback`：限制异常跳转和重复授权；不得记录 code、state 或 Cookie。
 - `/api/chat/stream`：限制并发连接与异常请求体。
@@ -101,7 +103,7 @@ Invoke-RestMethod https://YOUR_WORKER/api/health
 
 ## 8. 数据治理
 
-D1 管理审计包含 IP、消息正文、System Prompt、模型与回复，但不包含附件正文或 Key。部署者应：
+D1 云历史包含同步消息、附件提取文本和生成产物；管理审计包含 IP、消息正文、System Prompt、模型与回复，但不包含原始附件二进制或 Key。部署者应：
 
 - 发布隐私说明并解释审计目的。
 - 设置自动删除或明确保留周期。
@@ -110,6 +112,7 @@ D1 管理审计包含 IP、消息正文、System Prompt、模型与回复，但�
 - 不把聊天内容发送到无关分析服务。
 - CP access/refresh token 仅用于回调期间获取 userinfo，不持久化；本地会话 D1 只保存 SHA-256 哈希。
 - 引导答案以用户 ID 与版本为 AAD 加密保存，Provider Key 与私人助手 Key始终只保存在浏览器。
+- 对话删除后正文立即移除，仅保留 30 天 ID 墓碑；定期清理过期墓碑和审计数据。
 
 ## 9. 回滚
 

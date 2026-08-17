@@ -1,5 +1,6 @@
 import { ArrowUp, BrainCircuit, FileCode2, FileText, Globe2, LoaderCircle, Paperclip, Sparkles, WandSparkles, X } from 'lucide-react';
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import type { ChatAttachment, ProviderProfile } from '../types';
 import { useAppStore } from '../store';
 import { IconButton } from './ui';
@@ -25,6 +26,7 @@ export function Composer({
   replacement?: string;
   onReplacementApplied?: () => void;
 }) {
+  const reduceMotion = useReducedMotion();
   const [text, setText] = useState('');
   const [optimizing, setOptimizing] = useState(false);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
@@ -37,6 +39,9 @@ export function Composer({
   const fileRef = useRef<HTMLInputElement>(null);
   const settings = useAppStore((state) => state.settings);
   const auth = useAppStore((state) => state.auth);
+  const canReason = Boolean(auth.user?.permissions.includes('reasoning'));
+  const canSearch = Boolean(auth.user?.permissions.includes('web_search'));
+  const canSkills = Boolean(auth.user?.permissions.includes('skills'));
   const updateSettings = useAppStore((state) => state.updateSettings);
   const estimatedTokens = estimateTokens(text) + attachments.reduce((total, attachment) => (
     total + (attachment.kind === 'image' ? Math.ceil(attachment.size / 750) : estimateTokens(attachment.text ?? ''))
@@ -195,7 +200,7 @@ export function Composer({
             >
               {optimizing ? <LoaderCircle size={17} className="spin" /> : <Sparkles size={17} />}
             </IconButton>
-            <IconButton label={auth.authenticated ? '选择 Skills（也可输入 $$）' : '登录后可使用 Skills'} disabled={!auth.authenticated} className={selectedSkillIds.length ? 'active-tool' : ''} onClick={() => setSkillsOpen(true)}>
+            <IconButton label={canSkills ? '选择 Skills（也可输入 $$）' : '登录并取得权限后可使用 Skills'} disabled={!canSkills} className={selectedSkillIds.length ? 'active-tool' : ''} onClick={() => setSkillsOpen(true)}>
               <WandSparkles size={17} />
             </IconButton>
             <IconButton label="文件生成模式" disabled={!auth.authenticated} className={selectedSkillIds.includes('file-generation') ? 'active-tool' : ''} onClick={toggleFileSkill}>
@@ -204,14 +209,17 @@ export function Composer({
             <button
               type="button"
               className={`tool-chip ${settings.reasoningEnabled ? 'active' : ''}`}
-              disabled={!auth.authenticated}
+              disabled={!canReason}
               onClick={() => void updateSettings({ reasoningEnabled: !settings.reasoningEnabled })}
               title={profile.capabilities.reasoning ? '使用当前模型的原生思考能力' : '由智能助手生成可公开的辅助推演'}
             >
               <BrainCircuit size={15} /> 思考
             </button>
+            <AnimatePresence initial={false}>
             {settings.reasoningEnabled ? (
+              <motion.div className="reasoning-effort-shell" initial={reduceMotion ? false : { opacity: 0, width: 0, x: -8 }} animate={{ opacity: 1, width: 'auto', x: 0 }} exit={reduceMotion ? { opacity: 0 } : { opacity: 0, width: 0, x: -6 }} transition={{ duration: reduceMotion ? 0 : .144 }}>
               <div className="reasoning-effort-control" role="group" aria-label="思考强度">
+                <motion.span className="effort-indicator" aria-hidden animate={{ x: `${(['minimal', 'low', 'medium', 'high'] as const).indexOf(settings.reasoningEffort) * 100}%` }} transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 520, damping: 38 }} />
                 {([['minimal', '最低'], ['low', '低'], ['medium', '中'], ['high', '高']] as const).map(([value, label]) => (
                   <button
                     type="button"
@@ -222,11 +230,13 @@ export function Composer({
                   >{label}</button>
                 ))}
               </div>
+              </motion.div>
             ) : null}
+            </AnimatePresence>
             <button
               type="button"
               className={`tool-chip ${settings.webSearch ? 'active' : ''}`}
-              disabled={!auth.authenticated}
+              disabled={!canSearch}
               onClick={() => void updateSettings({ webSearch: !settings.webSearch })}
               title={profile.capabilities.webSearch ? '允许模型使用联网搜索' : '允许联网；当前模型可能忽略此选项'}
             >

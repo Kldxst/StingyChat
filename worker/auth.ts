@@ -2,7 +2,7 @@ import type { Context } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { z } from 'zod';
 import { ANONYMOUS_SETTINGS, DEFAULT_SETTINGS } from '../src/config';
-import type { AuthSessionState, AuthUser, OnboardingAnswers, PersonalizationProfile, UserPreferencesEnvelope } from '../src/types';
+import type { AuthSessionState, AuthUser, FeaturePermission, OnboardingAnswers, PersonalizationProfile, UserPreferencesEnvelope, UserRole } from '../src/types';
 import type { WorkerEnv } from './glm';
 
 type AppContext = Context<{ Bindings: WorkerEnv; Variables: { auth?: AuthSessionState } }>;
@@ -11,6 +11,17 @@ const decoder = new TextDecoder();
 const SESSION_COOKIE = 'stingy_session';
 const OAUTH_COOKIE = 'stingy_oauth';
 const SESSION_TTL = 30 * 24 * 60 * 60;
+const DEFAULT_QUOTA = 100 * 1024 * 1024;
+
+const ROLE_PERMISSIONS: Record<UserRole, FeaturePermission[]> = {
+  member: ['skills', 'smart_assist', 'reasoning', 'web_search', 'model_routing', 'batch', 'history_sync'],
+  support: ['skills', 'smart_assist', 'reasoning', 'web_search', 'model_routing', 'batch', 'history_sync', 'admin_users_read', 'admin_restrictions_read', 'admin_usage_read'],
+  admin: ['skills', 'smart_assist', 'reasoning', 'web_search', 'model_routing', 'batch', 'history_sync', 'admin_users_read', 'admin_users_write', 'admin_restrictions_read', 'admin_restrictions_write', 'admin_usage_read', 'admin_audit_read'],
+  owner: ['skills', 'smart_assist', 'reasoning', 'web_search', 'model_routing', 'batch', 'history_sync', 'admin_users_read', 'admin_users_write', 'admin_restrictions_read', 'admin_restrictions_write', 'admin_usage_read', 'admin_audit_read', 'admin_chat_read', 'admin_owner_actions'],
+};
+
+export function rolePermissions(role: UserRole): FeaturePermission[] { return [...ROLE_PERMISSIONS[role]]; }
+export function hasPermission(user: AuthUser, permission: FeaturePermission): boolean { return user.status === 'active' && user.permissions.includes(permission); }
 
 export const onboardingAnswersSchema = z.object({
   useCase: z.string().trim().min(1).max(500),
@@ -125,12 +136,19 @@ export async function finishOAuth(context: AppContext): Promise<Response> {
   const username = String(remote.preferred_username ?? remote.username ?? id).slice(0, 200);
   const displayName = String(remote.name ?? remote.display_name ?? username).slice(0, 200);
   const avatarUrl = typeof remote.picture === 'string' ? remote.picture.slice(0, 1000) : '';
-  await db.prepare(`INSERT INTO users (id, cp_sub, username, display_name, avatar_url, onboarding_status, updated_at)
-    VALUES (?, ?, ?, ?, ?, 'required', CURRENT_TIMESTAMP)
-    ON CONFLICT(cp_sub) DO UPDATE SET username=excluded.username, display_name=excluded.display_name, avatar_url=excluded.avatar_url, updated_at=CURRENT_TIMESTAMP`)
-    .bind(id, id, username, displayName, avatarUrl).run();
+  const isOwner = Boolean(context.env.OWNER_CP_SUB && id === context.env.OWNER_CP_SUB);
+  await db.prepare(`INSERT INTO users (id, cp_sub, username, display_name, avatar_url, onboarding_status, role, status, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'required', ?, 'active', CURRENT_TIMESTAMP)
+    ON CONFLICT(cp_sub) DO UPDATE SET username=excluded.username, display_name=excluded.display_name, avatar_url=excluded.avatar_url,
+      role=CASE WHEN excluded.role='owner' THEN 'owner' ELSE users.role END,
+      status=CASE WHEN excluded.role='owner' THEN 'active' ELSE users.status END, updated_at=CURRENT_TIMESTAMP`)
+    .bind(id, id, username, displayName, avatarUrl, isOwner ? 'owner' : 'member').run();
   const row = await db.prepare('SELECT onboarding_status FROM users WHERE id = ?').bind(id).first<{ onboarding_status: AuthUser['onboardingStatus'] }>();
-  await createLocalSession(context, { id, username, displayName, avatarUrl: avatarUrl || undefined, onboardingStatus: row?.onboarding_status ?? 'required' });
+  const initialRole: UserRole = isOwner ? 'owner' : 'member';
+  await createLocalSession(context, {
+    id, username, displayName, avatarUrl: avatarUrl || undefined, onboardingStatus: row?.onboarding_status ?? 'required',
+    role: initialRole, permissions: rolePermissions(initialRole), status: 'active', storageUsageBytes: 0, storageQuotaBytes: DEFAULT_QUOTA,
+  });
   return context.redirect(`${config.origin}${safeReturnPath(pending.returnPath)}`);
 }
 
@@ -138,15 +156,31 @@ export async function resolveSession(context: AppContext): Promise<AuthSessionSt
   const token = getCookie(context, SESSION_COOKIE);
   const db = database(context.env);
   if (!token || !db) return { authenticated: false };
-  const row = await db.prepare(`SELECT u.id, u.username, u.display_name, u.avatar_url, u.onboarding_status, s.expires_at
+  const row = await db.prepare(`SELECT u.id, u.cp_sub, u.username, u.display_name, u.avatar_url, u.onboarding_status, u.role, u.status,
+      u.storage_usage_bytes, u.storage_quota_bytes, s.expires_at
     FROM auth_sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=?`).bind(await sha256(token)).first<Record<string, unknown>>();
   if (!row || Number(row.expires_at) <= Date.now()) {
     if (row) await db.prepare('DELETE FROM auth_sessions WHERE token_hash=?').bind(await sha256(token)).run();
     deleteCookie(context, SESSION_COOKIE, { path: '/' });
     return { authenticated: false };
   }
+  const owner = Boolean(context.env.OWNER_CP_SUB && String(row.cp_sub ?? row.id) === context.env.OWNER_CP_SUB);
+  const role = owner ? 'owner' : (['admin', 'support', 'member'].includes(String(row.role)) ? String(row.role) as UserRole : 'member');
+  const status = owner ? 'active' : row.status === 'suspended' ? 'suspended' : 'active';
+  let permissions = rolePermissions(role);
+  try {
+    const overrides = await db.prepare('SELECT permission, allowed FROM user_permission_overrides WHERE user_id=?').bind(String(row.id)).all<{ permission: FeaturePermission; allowed: number }>();
+    const result = new Set(permissions);
+    for (const override of overrides.results ?? []) override.allowed ? result.add(override.permission) : result.delete(override.permission);
+    permissions = role === 'owner' ? rolePermissions('owner') : [...result];
+  } catch { /* Migration may still be rolling out; role defaults remain restrictive. */ }
+  if (owner && row.role !== 'owner') context.executionCtx.waitUntil(db.prepare("UPDATE users SET role='owner', status='active', updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(String(row.id)).run());
   context.executionCtx.waitUntil(db.prepare('UPDATE auth_sessions SET last_seen_at=? WHERE token_hash=?').bind(Date.now(), await sha256(token)).run());
-  return { authenticated: true, user: { id: String(row.id), username: String(row.username), displayName: String(row.display_name), avatarUrl: row.avatar_url ? String(row.avatar_url) : undefined, onboardingStatus: row.onboarding_status as AuthUser['onboardingStatus'] } };
+  return { authenticated: true, user: {
+    id: String(row.id), username: String(row.username), displayName: String(row.display_name), avatarUrl: row.avatar_url ? String(row.avatar_url) : undefined,
+    onboardingStatus: row.onboarding_status as AuthUser['onboardingStatus'], role, permissions, status,
+    storageUsageBytes: Number(row.storage_usage_bytes) || 0, storageQuotaBytes: Number(row.storage_quota_bytes) || DEFAULT_QUOTA,
+  } };
 }
 
 export async function logout(context: AppContext): Promise<Response> {

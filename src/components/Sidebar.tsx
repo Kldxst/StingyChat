@@ -2,42 +2,32 @@ import {
   Archive,
   Bot,
   Database,
-  Github,
   MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
   Search,
-  Settings2,
-  LogIn,
-  LogOut,
   ShieldCheck,
   Trash2,
 } from 'lucide-react';
-import { motion, useReducedMotion } from 'motion/react';
+import { motion } from 'motion/react';
 import { useMemo, useState } from 'react';
-import { GITHUB_REPOSITORY_URL } from '../config';
-import { loginUrl } from '../lib/auth';
 import { useAppStore } from '../store';
 import { IconButton } from './ui';
 
 export function Sidebar() {
-  const reduceMotion = useReducedMotion();
   const conversations = useAppStore((state) => state.conversations);
   const activeId = useAppStore((state) => state.activeConversationId);
   const view = useAppStore((state) => state.view);
   const sidebarOpen = useAppStore((state) => state.sidebarOpen);
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
-  const adminToken = useAppStore((state) => state.adminToken);
   const auth = useAppStore((state) => state.auth);
-  const logout = useAppStore((state) => state.logout);
   const createConversation = useAppStore((state) => state.createConversation);
   const selectConversation = useAppStore((state) => state.selectConversation);
   const deleteConversation = useAppStore((state) => state.deleteConversation);
   const setView = useAppStore((state) => state.setView);
   const setSidebarOpen = useAppStore((state) => state.setSidebarOpen);
   const setSidebarCollapsed = useAppStore((state) => state.setSidebarCollapsed);
-  const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
   const [query, setQuery] = useState('');
   const visibleConversations = useMemo(
     () => conversations.filter((conversation) => conversation.title.toLowerCase().includes(query.trim().toLowerCase())),
@@ -80,10 +70,10 @@ export function Sidebar() {
           <button className={view === 'knowledge' ? 'active' : ''} onClick={() => setView('knowledge')}>
             <Database size={16} /> 资料库
           </button>
-          <button className={view === 'batch' ? 'active' : ''} onClick={() => setView('batch')}>
+          <button disabled={auth.authenticated && !auth.user?.permissions.includes('batch')} className={view === 'batch' ? 'active' : ''} onClick={() => setView('batch')}>
             <Archive size={16} /> 批处理
           </button>
-          {adminToken ? (
+          {auth.user?.permissions.includes('admin_users_read') ? (
             <button className={view === 'admin' ? 'active' : ''} onClick={() => setView('admin')}>
               <ShieldCheck size={16} /> 管理
             </button>
@@ -116,30 +106,6 @@ export function Sidebar() {
           ))}
         </div>
 
-        <a
-          className="sidebar-github"
-          href={GITHUB_REPOSITORY_URL}
-          target="_blank"
-          rel="noreferrer"
-          onClick={() => setSidebarOpen(false)}
-          aria-label="在 GitHub 查看 StingyChat 开源仓库"
-        >
-          <motion.span
-            className="github-link-icon"
-            animate={reduceMotion ? undefined : { opacity: [1, 0.58, 1], scale: [1, 0.94, 1] }}
-            transition={reduceMotion ? undefined : { duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}
-          >
-            <Github size={19} />
-          </motion.span>
-          <span><strong>GitHub 开源仓库</strong><small>查看源码与参与贡献</small></span>
-        </a>
-
-        <button className="sidebar-settings" onClick={() => auth.authenticated ? setSettingsOpen(true) : (window.location.href = loginUrl())}>
-          <span className="settings-avatar">{auth.user?.displayName?.slice(0, 1) ?? 'S'}</span>
-          <span><strong>{auth.user?.displayName ?? '登录 StingyChat'}</strong><small>{auth.authenticated ? '设置、个性与密钥' : '启用优化、Skills 与智能功能'}</small></span>
-          <Settings2 size={17} />
-        </button>
-        {auth.authenticated ? <button className="sidebar-auth-action" onClick={() => void logout()}><LogOut size={16} />退出登录</button> : <a className="sidebar-auth-action" href={loginUrl()}><LogIn size={16} />使用 CP OAuth 登录</a>}
       </aside>
     </>
   );

@@ -177,11 +177,6 @@ export async function understandImageWithGlm(text: string, dataUrl: string): Pro
   return result.text;
 }
 
-export async function loginAdmin(password: string): Promise<string> {
-  const result = await jsonRequest<{ token: string }>('/api/admin/login', { password });
-  return result.token;
-}
-
 export function submitBatch(
   profile: ProviderProfile,
   apiKey: string,

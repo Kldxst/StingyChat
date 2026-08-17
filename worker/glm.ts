@@ -11,7 +11,6 @@ export interface WorkerEnv {
   FREE_GLM_BASE_URL?: string;
   FREE_GLM_MODEL?: string;
   GLM_SCHEDULER?: DurableObjectNamespace;
-  ADMIN_PASSWORD?: string;
   ADMIN_DB?: D1Database;
   APP_DB?: D1Database;
   CP_OAUTH_BASE_URL?: string;
@@ -20,6 +19,7 @@ export interface WorkerEnv {
   PUBLIC_ORIGIN?: string;
   SESSION_SECRET?: string;
   PROFILE_ENCRYPTION_KEY?: string;
+  OWNER_CP_SUB?: string;
 }
 
 export interface GlmCandidate {

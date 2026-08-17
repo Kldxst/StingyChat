@@ -10,7 +10,6 @@ import {
   compressConversation,
   generateConversationTitle,
   normalizeForSemanticCache,
-  loginAdmin,
   optimizeWithGlm,
   routePrompt,
   streamChat,
@@ -204,7 +203,6 @@ export function ChatView() {
   const appendMessages = useAppStore((state) => state.appendMessages);
   const updateConversation = useAppStore((state) => state.updateConversation);
   const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
-  const setAdminToken = useAppStore((state) => state.setAdminToken);
   const setActiveArtifact = useAppStore((state) => state.setActiveArtifact);
   const conversation = useMemo(
     () => conversations.find((item) => item.id === activeId),
@@ -323,15 +321,6 @@ export function ChatView() {
 
   const sendMessage = async (rawPrompt: string, attachments: ChatAttachment[] = [], skillIds: string[] = [], skipCache = false): Promise<boolean> => {
     if (!conversation || !profile || busy) return false;
-    if (rawPrompt.startsWith('Admin')) {
-      try {
-        setAdminToken(await loginAdmin(rawPrompt));
-        return true;
-      } catch {
-        setError('管理员凭据无效');
-        return false;
-      }
-    }
     shouldFollowRef.current = true;
     scrollToBottom();
     setBusy(true);
@@ -649,7 +638,7 @@ export function ChatView() {
               key={message.id}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.2 }}
+              transition={{ duration: 0.16 }}
             >
               <div className="message-avatar">
                 {message.role === 'assistant' ? <Bot size={16} /> : <User size={16} />}

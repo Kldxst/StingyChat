@@ -1,4 +1,4 @@
-import { Files, Menu, Settings2, Zap } from 'lucide-react';
+import { Menu, Zap } from 'lucide-react';
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ModelPicker } from './components/ModelPicker';
@@ -8,6 +8,7 @@ import { StarPrompt } from './components/StarPrompt';
 import { ArtifactPanel } from './components/ArtifactPanel';
 import { useAppStore } from './store';
 import { OnboardingWizard } from './components/OnboardingWizard';
+import { UserMenu } from './components/UserMenu';
 
 const ChatView = lazy(() => import('./components/ChatView').then((module) => ({ default: module.ChatView })));
 const KnowledgeView = lazy(() => import('./components/KnowledgeView').then((module) => ({ default: module.KnowledgeView })));
@@ -29,8 +30,6 @@ export default function App() {
   const artifactPanelOpen = useAppStore((state) => state.artifactPanelOpen);
   const auth = useAppStore((state) => state.auth);
   const setSidebarOpen = useAppStore((state) => state.setSidebarOpen);
-  const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
-  const setArtifactPanelOpen = useAppStore((state) => state.setArtifactPanelOpen);
   const conversation = conversations.find((item) => item.id === activeId);
   const profile = profiles.find((item) => item.id === conversation?.providerProfileId) ?? profiles[0];
 
@@ -73,8 +72,7 @@ export default function App() {
           ) : <strong className="workspace-title">{pageTitle}</strong>}
           <div className="topbar-actions">
             {settings.extremeMode ? <span className="extreme-badge"><Zap size={13} /> 极省</span> : null}
-            <IconButton label="打开生成文件" onClick={() => setArtifactPanelOpen(true)}><Files size={18} /></IconButton>
-            <IconButton label="打开设置" onClick={() => setSettingsOpen(true)}><Settings2 size={18} /></IconButton>
+            <UserMenu />
           </div>
         </header>
         <Suspense fallback={<div className="view-loading">正在加载工作区…</div>}>

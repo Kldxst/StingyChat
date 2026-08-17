@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { createAdminToken, matchesCidr, verifyAdminPassword, verifyAdminToken } from '../worker/admin';
+import { matchesCidr } from '../worker/admin';
+import { hasPermission, rolePermissions } from '../worker/auth';
+import type { AuthUser } from '../src/types';
 
 describe('admin security helpers', () => {
   it('matches exact addresses and IPv4 CIDR ranges', () => {
@@ -8,11 +10,12 @@ describe('admin security helpers', () => {
     expect(matchesCidr('2001:db8::1', '2001:db8::1')).toBe(true);
   });
 
-  it('verifies passwords and expiring signed sessions', async () => {
-    expect(await verifyAdminPassword('correct', 'correct')).toBe(true);
-    expect(await verifyAdminPassword('wrong', 'correct')).toBe(false);
-    const token = await createAdminToken('secret');
-    expect(await verifyAdminToken(token, 'secret')).toBe(true);
-    expect(await verifyAdminToken(token, 'different')).toBe(false);
+  it('grants chat audit and owner actions only to the owner role', () => {
+    const owner = { role: 'owner', status: 'active', permissions: rolePermissions('owner') } as AuthUser;
+    const admin = { role: 'admin', status: 'active', permissions: rolePermissions('admin') } as AuthUser;
+    expect(hasPermission(owner, 'admin_chat_read')).toBe(true);
+    expect(hasPermission(owner, 'admin_owner_actions')).toBe(true);
+    expect(hasPermission(admin, 'admin_chat_read')).toBe(false);
+    expect(hasPermission({ ...owner, status: 'suspended' }, 'admin_chat_read')).toBe(false);
   });
 });

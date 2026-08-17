@@ -27,7 +27,7 @@ StingyChat 是运行在 Cloudflare Workers 上的 Token 优化 AI 聊天工作�
 - 前端：React 19、Vite、TypeScript、Zustand、Dexie、Motion、React Markdown、KaTeX。
 - Worker：Hono、Zod、Cloudflare Workers Static Assets。
 - 调度：`GlmScheduler` Durable Object，每个开发者 GLM Key 一个并发槽，FIFO 排队。
-- 存储：会话、资料、索引、语义缓存和用户 Key 位于浏览器 IndexedDB；D1 保存登录会话哈希、加密个性答案、版本化偏好与可选管理员审计。
+- 存储：资料、索引、语义缓存和用户 Key 位于浏览器 IndexedDB；登录用户的可同步会话、版本化偏好、加密个性答案与 RBAC 审计保存到 D1。
 - Token：OpenAI 类模型按需动态加载 `js-tiktoken`，其他模型明确使用估算。
 
 详见 [架构说明](docs/ARCHITECTURE.md) 与 [Cloudflare 部署指南](docs/DEPLOYMENT.md)。
@@ -52,7 +52,7 @@ GLM_API_KEY=
 FREE_GLM_API_KEY=
 GLM_FALLBACK_API_KEYS=[]
 GLM_VISION_MODEL=GLM-4.6V-Flash
-ADMIN_PASSWORD=
+OWNER_CP_SUB=CP OAuth user subject for the permanent Owner
 ```
 
 `GLM_FALLBACK_API_KEYS` 是 JSON 字符串数组。不要把 `.dev.vars`、真实 Key、管理员密码或 Wrangler 状态目录提交到 Git。
@@ -73,7 +73,7 @@ ADMIN_PASSWORD=
 npx wrangler secret put GLM_API_KEY
 npx wrangler secret put FREE_GLM_API_KEY
 npx wrangler secret put GLM_FALLBACK_API_KEYS
-npx wrangler secret put ADMIN_PASSWORD
+npx wrangler secret put OWNER_CP_SUB
 npx wrangler secret put CP_OAUTH_CLIENT_ID
 npx wrangler secret put CP_OAUTH_CLIENT_SECRET
 npx wrangler secret put SESSION_SECRET
@@ -92,7 +92,9 @@ Worker 代码不会把这些 Key 写入 D1、缓存、错误响应或显式日�
 
 CP OAuth 仅请求 `openid profile`。回调完成后不会保存 CP access token 或 refresh token；浏览器会话使用 Secure、HttpOnly、SameSite=Lax Cookie，D1 仅保存随机会话令牌的 SHA-256 哈希。十项引导答案以用户 ID 和设置版本作为 AAD，经 AES-GCM 加密后写入 D1。
 
-启用管理员审计后，D1 保存消息正文、System Prompt、非敏感设置、模型、来源 IP 与回复。附件只保存名称、类型、大小等元数据；图片 Data URL、文档全文和任何 API Key 不写入 D1。部署者必须披露审计、设置保留期并以 Cloudflare Access 保护后台。
+云历史会保存消息正文、推理摘要、引用、Token 明细、长期记忆、System Prompt、附件提取文本与生成产物；超过 128KiB 的文本分块存放。原始图片、原始文件二进制、图片 Data URL 和任何 API Key 不写入 D1。删除对话会立即删除正文，仅保留 30 天的无内容 ID 墓碑。聊天审计只向 Owner 开放，部署者必须披露审计范围并以 Cloudflare Access 保护后台。
+
+账号角色固定为 `owner/admin/support/member`。`OWNER_CP_SUB` 在每次鉴权时强制绑定永久 Owner，Owner 不可被降级、停用或删除；功能权限同时在前端与 Worker 中校验。默认云历史配额为每账号 100MB。
 
 官方实例设计为免费、无广告，不出售用户 Key，也不从用户自带 Key 获利。GPL 许可证仍允许第三方按许可证条款独立运营或收费。
 

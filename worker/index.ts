@@ -1,19 +1,12 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { z } from 'zod';
-import type { ChatRequest, ConversationMemory, OnboardingAnswers, UserPreferencesEnvelope } from '../src/types';
+import type { ChatRequest, ConversationMemory, FeaturePermission, OnboardingAnswers, UserPreferencesEnvelope, UserRole } from '../src/types';
 import { getBatchResults, getBatchStatus, submitBatch } from './batch';
 import { callGlm, callGlmTask, parseJsonObject, type PersonalAssistantCredentials, type WorkerEnv } from './glm';
 export { GlmScheduler } from './glmScheduler';
 import { streamProvider } from './providers';
-import {
-  createAdminToken,
-  extractAssistantText,
-  getRestriction,
-  requestIp,
-  verifyAdminPassword,
-  verifyAdminToken,
-} from './admin';
+import { extractAssistantText, getRestriction, requestIp } from './admin';
 import {
   assistTextSchema,
   batchOperationSchema,
@@ -37,6 +30,7 @@ import {
   beginOAuth,
   finishOAuth,
   getPreferences,
+  hasPermission,
   logout,
   onboardingAnswersSchema,
   personalizationSchema,
@@ -45,10 +39,30 @@ import {
   safePersonalization,
   validMutationOrigin,
 } from './auth';
+import { conversationSyncSchema, deleteCloudConversation, exportCloudData, getCloudConversation, listCloudConversations, syncCloudConversation } from './history';
 
 type AppEnvironment = { Bindings: WorkerEnv; Variables: { auth?: Awaited<ReturnType<typeof resolveSession>> } };
 const app = new Hono<AppEnvironment>();
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
+function appDatabase(env: WorkerEnv): D1Database | undefined { return env.APP_DB ?? env.ADMIN_DB; }
+
+function requirePermission(permission: FeaturePermission) {
+  return async (context: Context<AppEnvironment>, next: () => Promise<void>) => {
+    const auth = await resolveSession(context);
+    if (!auth.authenticated || !auth.user) return context.json({ error: '请先登录后使用此功能' }, 401);
+    if (!hasPermission(auth.user, permission)) return context.json({ error: auth.user.status === 'suspended' ? '账号当前已停用' : '当前账号没有此功能权限' }, 403);
+    if (context.req.method !== 'GET' && !validMutationOrigin(context)) return context.json({ error: '请求来源无效' }, 403);
+    context.set('auth', auth);
+    await next();
+  };
+}
+
+async function writeAdminAudit(context: Context<AppEnvironment>, action: string, targetUserId?: string, details: object = {}) {
+  const db = appDatabase(context.env); const actor = context.get('auth')?.user;
+  if (!db || !actor) return;
+  await db.prepare('INSERT INTO admin_audit_events (actor_user_id,target_user_id,action,details_json,ip,created_at_ms) VALUES (?,?,?,?,?,?)')
+    .bind(actor.id, targetUserId ?? null, action, JSON.stringify(details), requestIp(context), Date.now()).run();
+}
 
 function networkRuntimePrompt(context: Context<AppEnvironment>): string {
   const cf = context.req.raw.cf as {
@@ -131,7 +145,7 @@ app.get('/api/health', (context) =>
     ok: true,
     glmConfigured: Boolean(context.env.GLM_API_KEY),
     freeModelConfigured: Boolean(context.env.FREE_GLM_API_KEY),
-    adminConfigured: Boolean(context.env.ADMIN_PASSWORD && context.env.ADMIN_DB),
+    adminConfigured: Boolean(context.env.OWNER_CP_SUB && appDatabase(context.env)),
   }),
 );
 
@@ -143,6 +157,7 @@ app.post('/api/auth/logout', async (context) => validMutationOrigin(context) ? l
 app.use('/api/user/*', async (context, next) => {
   const auth = await resolveSession(context);
   if (!auth.authenticated || !auth.user) return context.json({ error: '请先登录后使用此功能' }, 401);
+  if (auth.user.status !== 'active') return context.json({ error: '账号当前已停用' }, 403);
   if (context.req.method !== 'GET' && !validMutationOrigin(context)) return context.json({ error: '请求来源无效' }, 403);
   context.set('auth', auth);
   await next();
@@ -191,6 +206,31 @@ app.post('/api/user/personalization/regenerate', async (context) => {
   return context.json(await proposePersonalization(context, parsed.data));
 });
 
+app.use('/api/conversations/*', requirePermission('history_sync'));
+app.get('/api/conversations', async (context) => context.json(await listCloudConversations(
+  context.env, context.get('auth')!.user!, Number(context.req.query('cursor')) || 0, Number(context.req.query('limit')) || 50,
+)));
+app.get('/api/conversations/export', async (context) => context.json(await exportCloudData(
+  context.env, context.get('auth')!.user!, await getPreferences(context.env, context.get('auth')!.user!),
+)));
+app.get('/api/conversations/:id', async (context) => {
+  const conversation = await getCloudConversation(context.env, context.get('auth')!.user!, context.req.param('id'));
+  return conversation ? context.json(conversation) : context.json({ error: '对话不存在' }, 404);
+});
+app.put('/api/conversations/:id', async (context) => {
+  const parsed = conversationSyncSchema.safeParse(await context.req.json().catch(() => undefined));
+  if (!parsed.success || parsed.data.conversation.id !== context.req.param('id')) return context.json({ error: '会话同步数据无效' }, 400);
+  const result = await syncCloudConversation(context.env, context.get('auth')!.user!, parsed.data);
+  if ('conflict' in result) return context.json({ error: '会话已在其他设备更新', latest: result.conflict }, 409);
+  if ('quotaExceeded' in result) return context.json({ error: '云端历史空间已满', quota: result.quota, projected: result.projected }, 413);
+  if ('deleted' in result) return context.json({ error: '该对话已在其他设备删除' }, 410);
+  return context.json(result);
+});
+app.delete('/api/conversations/:id', async (context) => {
+  await deleteCloudConversation(context.env, context.get('auth')!.user!, context.req.param('id'));
+  return context.json({ ok: true });
+});
+
 app.get('/favicon.ico', (context) => context.body(null, 204));
 
 app.get('/api/assist/queue/:requestId', async (context) => {
@@ -209,7 +249,17 @@ app.post('/api/chat/stream', async (context) => {
   }, 400);
   const request = parsed.data as ChatRequest;
   const auth = await resolveSession(context);
-  if (!auth.authenticated) request.settings = anonymousSettings();
+  if (!auth.authenticated || !auth.user) request.settings = anonymousSettings();
+  else {
+    if (auth.user.status !== 'active') return context.json({ error: '账号当前已停用' }, 403);
+    request.settings = {
+      ...request.settings,
+      reasoningEnabled: hasPermission(auth.user, 'reasoning') && request.settings.reasoningEnabled,
+      webSearch: hasPermission(auth.user, 'web_search') && request.settings.webSearch,
+      modelRouting: hasPermission(auth.user, 'model_routing') && request.settings.modelRouting,
+      autoSkills: hasPermission(auth.user, 'skills') && request.settings.autoSkills,
+    };
+  }
   const ip = requestIp(context);
   const restriction = await getRestriction(context.env, ip);
   if (restriction?.block_chat) return context.json({ error: '当前网络段已被管理员限制聊天功能' }, 403);
@@ -247,7 +297,7 @@ app.post('/api/chat/stream', async (context) => {
   context.executionCtx.waitUntil((async () => {
     const sse = await new Response(auditBody).text();
     await context.env.ADMIN_DB!.prepare(
-      'INSERT INTO chat_logs (conversation_id, ip, provider, model, request_json, response_text) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO chat_logs (conversation_id, ip, provider, model, request_json, response_text, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ).bind(
       request.conversationId,
       ip,
@@ -255,14 +305,20 @@ app.post('/api/chat/stream', async (context) => {
       request.profile.model,
       JSON.stringify({ messages: auditMessages(request.messages), systemPrompt: request.systemPrompt, settings: request.settings }),
       extractAssistantText(sse),
+      auth.user?.id ?? null,
     ).run();
+    if (auth.user) await appDatabase(context.env)?.prepare(`INSERT INTO user_usage_daily (user_id,usage_date,chat_requests) VALUES (?,date('now'),1)
+      ON CONFLICT(user_id,usage_date) DO UPDATE SET chat_requests=chat_requests+1`).bind(auth.user.id).run();
   })());
   return new Response(clientBody, response);
 });
 
 app.use('/api/assist/*', async (context, next) => {
   const auth = await resolveSession(context);
-  if (!auth.authenticated) return context.json({ error: '请先登录后使用智能辅助功能' }, 401);
+  if (!auth.authenticated || !auth.user) return context.json({ error: '请先登录后使用智能辅助功能' }, 401);
+  if (!hasPermission(auth.user, 'smart_assist')) return context.json({ error: '当前账号没有智能辅助权限' }, 403);
+  if (context.req.path.endsWith('/web-search') && !hasPermission(auth.user, 'web_search')) return context.json({ error: '当前账号没有联网权限' }, 403);
+  if (context.req.path.endsWith('/reason') && !hasPermission(auth.user, 'reasoning')) return context.json({ error: '当前账号没有思考权限' }, 403);
   const restriction = await getRestriction(context.env, requestIp(context));
   if (restriction?.block_assist) return context.json({ error: '当前网络段已被管理员限制智能辅助功能' }, 403);
   await next();
@@ -274,44 +330,135 @@ app.use('/api/conversation/*', async (context, next) => {
   await next();
 });
 
-app.post('/api/admin/login', async (context) => {
-  const body = await context.req.json<{ password?: string }>().catch((): { password?: string } => ({}));
-  if (!await verifyAdminPassword(body.password ?? '', context.env.ADMIN_PASSWORD)) return context.json({ error: '管理员凭据无效' }, 401);
-  return context.json({ token: await createAdminToken(context.env.ADMIN_PASSWORD!) });
-});
+app.use('/api/batch/*', requirePermission('batch'));
 
 app.use('/api/admin/*', async (context, next) => {
-  if (context.req.path === '/api/admin/login') return next();
-  const token = context.req.header('authorization')?.replace(/^Bearer\s+/iu, '');
-  if (!await verifyAdminToken(token, context.env.ADMIN_PASSWORD)) return context.json({ error: '管理员会话无效或已过期' }, 401);
-  if (!context.env.ADMIN_DB) return context.json({ error: '管理数据库尚未配置' }, 503);
+  const auth = await resolveSession(context);
+  if (!auth.authenticated || !auth.user) return context.json({ error: '请先登录' }, 401);
+  if (!hasPermission(auth.user, 'admin_users_read')) return context.json({ error: '没有管理后台权限' }, 403);
+  if (context.req.method !== 'GET' && !validMutationOrigin(context)) return context.json({ error: '请求来源无效' }, 403);
+  if (!appDatabase(context.env)) return context.json({ error: '管理数据库尚未配置' }, 503);
+  context.set('auth', auth);
   await next();
 });
 
+app.get('/api/admin/overview', async (context) => {
+  if (!hasPermission(context.get('auth')!.user!, 'admin_usage_read')) return context.json({ error: '没有用量统计权限' }, 403);
+  const db = appDatabase(context.env)!;
+  const [users, conversations, requests, suspended] = await Promise.all([
+    db.prepare('SELECT COUNT(*) count FROM users').first<{ count: number }>(),
+    db.prepare('SELECT COUNT(*) count FROM cloud_conversations').first<{ count: number }>(),
+    db.prepare('SELECT COUNT(*) count FROM chat_logs WHERE created_at >= datetime(\'now\', \'-1 day\')').first<{ count: number }>(),
+    db.prepare("SELECT COUNT(*) count FROM users WHERE status='suspended'").first<{ count: number }>(),
+  ]);
+  return context.json({ users: Number(users?.count ?? 0), conversations: Number(conversations?.count ?? 0), requests24h: Number(requests?.count ?? 0), suspended: Number(suspended?.count ?? 0) });
+});
+
+app.get('/api/admin/users', async (context) => {
+  const page = Math.max(1, Number(context.req.query('page')) || 1); const limit = Math.min(100, Math.max(10, Number(context.req.query('limit')) || 25));
+  const query = (context.req.query('q') ?? '').trim(); const role = context.req.query('role'); const status = context.req.query('status');
+  const clauses: string[] = []; const values: unknown[] = [];
+  if (query) { clauses.push('(username LIKE ? OR display_name LIKE ? OR id LIKE ?)'); values.push(`%${query}%`, `%${query}%`, `%${query}%`); }
+  if (role && ['owner', 'admin', 'support', 'member'].includes(role)) { clauses.push('role=?'); values.push(role); }
+  if (status && ['active', 'suspended'].includes(status)) { clauses.push('status=?'); values.push(status); }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const db = appDatabase(context.env)!;
+  const [rows, count] = await Promise.all([
+    db.prepare(`SELECT id,username,display_name,avatar_url,onboarding_status,role,status,storage_quota_bytes,storage_usage_bytes,created_at,updated_at FROM users ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`).bind(...values, limit, (page - 1) * limit).all(),
+    db.prepare(`SELECT COUNT(*) count FROM users ${where}`).bind(...values).first<{ count: number }>(),
+  ]);
+  return context.json({ items: rows.results ?? [], total: Number(count?.count ?? 0), page, limit });
+});
+
+async function targetUser(context: Context<AppEnvironment>, id: string) {
+  return appDatabase(context.env)!.prepare('SELECT id,cp_sub,role,status FROM users WHERE id=?').bind(id).first<{ id: string; cp_sub: string; role: UserRole; status: string }>();
+}
+
+app.patch('/api/admin/users/:id/role', async (context) => {
+  const actor = context.get('auth')!.user!; if (!hasPermission(actor, 'admin_users_write')) return context.json({ error: '没有用户管理权限' }, 403);
+  const body = await context.req.json<{ role?: UserRole }>().catch((): { role?: UserRole } => ({})); const target = await targetUser(context, context.req.param('id'));
+  if (!target || !body.role || !['owner', 'admin', 'support', 'member'].includes(body.role)) return context.json({ error: '用户或角色无效' }, 400);
+  if (target.cp_sub === context.env.OWNER_CP_SUB || target.role === 'owner') return context.json({ error: '永久 Owner 不能被降级' }, 403);
+  if (actor.role !== 'owner' && (body.role === 'owner' || body.role === 'admin' || target.role === 'admin')) return context.json({ error: '仅 Owner 可管理高权限角色' }, 403);
+  await appDatabase(context.env)!.prepare('UPDATE users SET role=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(body.role, target.id).run();
+  await writeAdminAudit(context, 'user.role', target.id, { from: target.role, to: body.role }); return context.json({ ok: true });
+});
+
+app.put('/api/admin/users/:id/permissions', async (context) => {
+  const actor = context.get('auth')!.user!; if (!hasPermission(actor, 'admin_users_write')) return context.json({ error: '没有权限管理权限' }, 403);
+  const body = await context.req.json<{ permissions?: Array<{ permission: FeaturePermission; allowed: boolean }> }>().catch((): { permissions?: Array<{ permission: FeaturePermission; allowed: boolean }> } => ({})); const target = await targetUser(context, context.req.param('id'));
+  if (!target || !Array.isArray(body.permissions) || target.role === 'owner') return context.json({ error: '权限变更请求无效' }, 400);
+  const allowedPermissions = new Set<FeaturePermission>(['skills','smart_assist','reasoning','web_search','model_routing','batch','history_sync','admin_users_read','admin_restrictions_read','admin_usage_read']);
+  const statements = body.permissions.filter((item) => allowedPermissions.has(item.permission)).map((item) => appDatabase(context.env)!.prepare(`INSERT INTO user_permission_overrides (user_id,permission,allowed,updated_by,updated_at_ms) VALUES (?,?,?,?,?) ON CONFLICT(user_id,permission) DO UPDATE SET allowed=excluded.allowed,updated_by=excluded.updated_by,updated_at_ms=excluded.updated_at_ms`).bind(target.id, item.permission, item.allowed ? 1 : 0, actor.id, Date.now()));
+  if (statements.length) await appDatabase(context.env)!.batch(statements); await writeAdminAudit(context, 'user.permissions', target.id, { count: statements.length }); return context.json({ ok: true });
+});
+
+app.patch('/api/admin/users/:id/quota', async (context) => {
+  const actor = context.get('auth')!.user!; if (!hasPermission(actor, 'admin_users_write')) return context.json({ error: '没有配额管理权限' }, 403);
+  const body = await context.req.json<{ bytes?: number }>().catch((): { bytes?: number } => ({})); const bytes = Number(body.bytes);
+  if (!Number.isSafeInteger(bytes) || bytes < 1024 * 1024 || bytes > 10 * 1024 * 1024 * 1024) return context.json({ error: '配额范围无效' }, 400);
+  await appDatabase(context.env)!.prepare('UPDATE users SET storage_quota_bytes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(bytes, context.req.param('id')).run();
+  await writeAdminAudit(context, 'user.quota', context.req.param('id'), { bytes }); return context.json({ ok: true });
+});
+
+app.patch('/api/admin/users/:id/status', async (context) => {
+  const actor = context.get('auth')!.user!; if (!hasPermission(actor, 'admin_users_write')) return context.json({ error: '没有账号管理权限' }, 403);
+  const body = await context.req.json<{ status?: 'active' | 'suspended'; reason?: string }>().catch((): { status?: 'active' | 'suspended'; reason?: string } => ({})); const target = await targetUser(context, context.req.param('id'));
+  if (!target || !body.status || target.cp_sub === context.env.OWNER_CP_SUB || target.role === 'owner') return context.json({ error: '永久 Owner 不能被停用' }, 403);
+  await appDatabase(context.env)!.prepare('UPDATE users SET status=?,suspended_at_ms=?,suspended_reason=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(body.status, body.status === 'suspended' ? Date.now() : null, body.status === 'suspended' ? String(body.reason ?? '').slice(0, 300) : null, target.id).run();
+  if (body.status === 'suspended') await appDatabase(context.env)!.prepare('DELETE FROM auth_sessions WHERE user_id=?').bind(target.id).run();
+  await writeAdminAudit(context, `user.${body.status}`, target.id, { reason: body.reason }); return context.json({ ok: true });
+});
+
+app.post('/api/admin/users/:id/revoke-sessions', async (context) => {
+  if (!hasPermission(context.get('auth')!.user!, 'admin_users_write')) return context.json({ error: '没有会话管理权限' }, 403);
+  await appDatabase(context.env)!.prepare('DELETE FROM auth_sessions WHERE user_id=?').bind(context.req.param('id')).run();
+  await writeAdminAudit(context, 'user.sessions.revoke', context.req.param('id')); return context.json({ ok: true });
+});
+
+app.delete('/api/admin/users/:id', async (context) => {
+  const actor = context.get('auth')!.user!; if (!hasPermission(actor, 'admin_owner_actions')) return context.json({ error: '仅 Owner 可永久删除用户' }, 403);
+  const body = await context.req.json<{ confirmation?: string }>().catch((): { confirmation?: string } => ({})); const target = await targetUser(context, context.req.param('id'));
+  if (!target || target.role === 'owner' || target.cp_sub === context.env.OWNER_CP_SUB || body.confirmation !== target.id) return context.json({ error: '确认标识不匹配，或目标不可删除' }, 400);
+  await writeAdminAudit(context, 'user.delete', target.id, { confirmed: true });
+  await appDatabase(context.env)!.prepare('DELETE FROM users WHERE id=?').bind(target.id).run(); return context.json({ ok: true });
+});
+
+app.get('/api/admin/audit', async (context) => {
+  if (!hasPermission(context.get('auth')!.user!, 'admin_audit_read')) return context.json({ error: '没有操作日志权限' }, 403);
+  const rows = await appDatabase(context.env)!.prepare('SELECT * FROM admin_audit_events ORDER BY id DESC LIMIT 500').all(); return context.json({ items: rows.results ?? [] });
+});
+
 app.get('/api/admin/chats', async (context) => {
-  const rows = await context.env.ADMIN_DB!.prepare('SELECT * FROM chat_logs ORDER BY id DESC LIMIT 500').all();
+  if (!hasPermission(context.get('auth')!.user!, 'admin_chat_read')) return context.json({ error: '仅 Owner 可查看聊天正文' }, 403);
+  const rows = await appDatabase(context.env)!.prepare('SELECT * FROM chat_logs ORDER BY id DESC LIMIT 500').all();
   return context.json({ items: rows.results });
 });
 
 app.get('/api/admin/restrictions', async (context) => {
-  const rows = await context.env.ADMIN_DB!.prepare('SELECT * FROM ip_restrictions ORDER BY id DESC').all();
+  if (!hasPermission(context.get('auth')!.user!, 'admin_restrictions_read')) return context.json({ error: '没有网络限制读取权限' }, 403);
+  const rows = await appDatabase(context.env)!.prepare('SELECT * FROM ip_restrictions ORDER BY id DESC').all();
   return context.json({ items: rows.results });
 });
 
 app.post('/api/admin/restrictions', async (context) => {
+  if (!hasPermission(context.get('auth')!.user!, 'admin_restrictions_write')) return context.json({ error: '没有网络限制管理权限' }, 403);
   const body = await context.req.json<Record<string, unknown>>().catch((): Record<string, unknown> => ({}));
   const cidr = typeof body.cidr === 'string' ? body.cidr.trim() : '';
   if (!cidr || cidr.length > 80) return context.json({ error: 'IP 或 CIDR 格式无效' }, 400);
-  await context.env.ADMIN_DB!.prepare(
+  await appDatabase(context.env)!.prepare(
     'INSERT INTO ip_restrictions (cidr, block_chat, block_assist, block_web_search, reason) VALUES (?, ?, ?, ?, ?) ON CONFLICT(cidr) DO UPDATE SET block_chat=excluded.block_chat, block_assist=excluded.block_assist, block_web_search=excluded.block_web_search, reason=excluded.reason',
   ).bind(cidr, body.blockChat ? 1 : 0, body.blockAssist ? 1 : 0, body.blockWebSearch ? 1 : 0, typeof body.reason === 'string' ? body.reason.slice(0, 300) : '').run();
+  await writeAdminAudit(context, 'restriction.upsert', undefined, { cidr });
   return context.json({ ok: true });
 });
 
 app.delete('/api/admin/restrictions/:id', async (context) => {
+  if (!hasPermission(context.get('auth')!.user!, 'admin_restrictions_write')) return context.json({ error: '没有网络限制管理权限' }, 403);
   const id = Number(context.req.param('id'));
   if (!Number.isInteger(id) || id < 1) return context.json({ error: '限制记录无效' }, 400);
-  await context.env.ADMIN_DB!.prepare('DELETE FROM ip_restrictions WHERE id = ?').bind(id).run();
+  await appDatabase(context.env)!.prepare('DELETE FROM ip_restrictions WHERE id = ?').bind(id).run();
+  await writeAdminAudit(context, 'restriction.delete', undefined, { id });
   return context.json({ ok: true });
 });
 

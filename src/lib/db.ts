@@ -22,6 +22,14 @@ interface SettingsRecord {
   beforeExtreme?: OptimizationSettings;
 }
 
+interface ConversationSyncRecord {
+  id?: number;
+  namespace: string;
+  conversationId: string;
+  operation: 'upsert' | 'delete';
+  updatedAt: number;
+}
+
 class StingyDatabase extends Dexie {
   conversations!: EntityTable<Conversation, 'id'>;
   profiles!: EntityTable<ProviderProfile, 'id'>;
@@ -30,6 +38,7 @@ class StingyDatabase extends Dexie {
   cache!: EntityTable<SemanticCacheEntry, 'id'>;
   secrets!: EntityTable<EncryptedSecretRecord, 'profileId'>;
   settings!: EntityTable<SettingsRecord, 'id'>;
+  conversationSync!: EntityTable<ConversationSyncRecord, 'id'>;
 
   constructor() {
     super('stingy-chat');
@@ -41,6 +50,18 @@ class StingyDatabase extends Dexie {
       cache: 'id, conversationId, fingerprint, createdAt',
       secrets: 'profileId',
       settings: 'id',
+    });
+    this.version(2).stores({
+      conversations: 'id, namespace, [namespace+updatedAt], updatedAt',
+      profiles: 'id, kind', documents: 'id, createdAt', chunks: 'id, documentId',
+      cache: 'id, conversationId, fingerprint, createdAt', secrets: 'profileId', settings: 'id',
+      conversationSync: '++id, namespace, conversationId, updatedAt, [namespace+conversationId]',
+    }).upgrade(async (transaction) => {
+      await transaction.table<Conversation, string>('conversations').toCollection().modify((conversation) => {
+        conversation.namespace = conversation.namespace || 'anonymous';
+        conversation.revision = conversation.revision ?? 0;
+        conversation.syncState = conversation.syncState ?? 'local-only';
+      });
     });
   }
 }

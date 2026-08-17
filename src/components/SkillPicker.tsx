@@ -44,7 +44,7 @@ export function SkillPicker({
     <AnimatePresence>
       {open ? (
         <motion.div className="skill-picker-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-        <motion.section ref={panelRef} className="skill-picker" role="dialog" aria-modal="true" aria-label="选择 Skills" initial={{ opacity: 0, y: 12, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: 0.99 }} transition={{ duration: 0.18 }}>
+        <motion.section ref={panelRef} className="skill-picker" role="dialog" aria-modal="true" aria-label="选择 Skills" initial={{ opacity: 0, y: 12, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: 0.99 }} transition={{ duration: 0.144 }}>
           <header>
             <span><WandSparkles size={17} /><strong>Skills</strong><small>输入 $$ 可随时打开</small></span>
             <IconButton label="关闭 Skills" onClick={onClose}><X size={17} /></IconButton>

@@ -9,11 +9,15 @@ import type {
   ConversationMemory,
   OptimizationSettings,
   ProviderProfile,
+  SyncStatus,
   UserPreferencesEnvelope,
+  DataExportBundle,
 } from './types';
 import type { FavoriteModel } from './types';
 import { loadFavoriteModels, saveFavoriteModels } from './lib/preferences';
-import { getAuthSession, getUserPreferences, logoutUser, updateUserPreferences } from './lib/auth';
+import { getAuthSession, getUserPreferences, logoutUser } from './lib/auth';
+import { drainConversationSync, observeCloudConversation, observeCloudSync, pullCloudConversations, queueConversationSync } from './lib/cloudSync';
+import { schedulePreferenceSync } from './lib/preferenceSync';
 
 export type WorkspaceView = 'chat' | 'knowledge' | 'batch' | 'admin';
 
@@ -27,7 +31,7 @@ const EMPTY_MEMORY: ConversationMemory = {
   updatedAt: Date.now(),
 };
 
-function createConversation(profileId = DEFAULT_PROFILES[0].id): Conversation {
+function createConversation(profileId = DEFAULT_PROFILES[0].id, namespace = 'anonymous'): Conversation {
   const now = Date.now();
   return {
     id: crypto.randomUUID(),
@@ -38,6 +42,9 @@ function createConversation(profileId = DEFAULT_PROFILES[0].id): Conversation {
     providerProfileId: profileId,
     createdAt: now,
     updatedAt: now,
+    namespace,
+    revision: 0,
+    syncState: namespace === 'anonymous' ? 'local-only' : 'pending',
   };
 }
 
@@ -106,7 +113,9 @@ interface AppState {
   artifactPanelOpen: boolean;
   activeArtifactId?: string;
   settingsOpen: boolean;
-  adminToken?: string;
+  namespace: string;
+  syncStatus: SyncStatus;
+  syncDetail?: string;
   initialize: () => Promise<void>;
   createConversation: () => Promise<string>;
   selectConversation: (id: string) => void;
@@ -125,8 +134,8 @@ interface AppState {
   setArtifactPanelOpen: (open: boolean) => void;
   setActiveArtifact: (id?: string) => void;
   setSettingsOpen: (open: boolean) => void;
-  setAdminToken: (token?: string) => void;
   applyPreferences: (value: UserPreferencesEnvelope) => void;
+  importData: (bundle: DataExportBundle) => Promise<{ added: number; updated: number }>;
   logout: () => Promise<void>;
 }
 
@@ -149,16 +158,25 @@ export const useAppStore = create<AppState>((set, get) => ({
   sidebarCollapsed: typeof localStorage === 'undefined' ? false : localStorage.getItem('stingy-sidebar-collapsed') === 'true',
   artifactPanelOpen: false,
   settingsOpen: false,
-  adminToken: typeof sessionStorage === 'undefined' ? undefined : sessionStorage.getItem('stingy-admin-token') ?? undefined,
+  namespace: 'anonymous',
+  syncStatus: 'idle',
 
   initialize: async () => {
     if (get().initialized) return;
-    const [storedConversations, storedProfiles, settingsRecord, auth] = await Promise.all([
-      db.conversations.orderBy('updatedAt').reverse().toArray(),
+    const [storedProfiles, settingsRecord, auth] = await Promise.all([
       db.profiles.toArray(),
       db.settings.get('global'),
       getAuthSession().catch((): AuthSessionState => ({ authenticated: false })),
     ]);
+    const namespace = auth.user ? `user:${auth.user.id}` : 'anonymous';
+    if (auth.user) {
+      const anonymous = await db.conversations.filter((item) => !item.namespace || item.namespace === 'anonymous').toArray();
+      for (const conversation of anonymous) {
+        await db.conversations.update(conversation.id, { namespace, syncState: 'pending', revision: 0 });
+        await queueConversationSync(namespace, conversation.id, 'upsert');
+      }
+    }
+    const storedConversations = await db.conversations.where('namespace').equals(namespace).reverse().sortBy('updatedAt');
     const remotePreferences = auth.authenticated ? await getUserPreferences().catch(() => undefined) : undefined;
     const defaultIds = new Set(DEFAULT_PROFILES.map((profile) => profile.id));
     const storedById = new Map(storedProfiles.map((profile) => [profile.id, profile]));
@@ -174,7 +192,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       profiles.some((profile) => profile.id === conversation.providerProfileId) ? conversation.providerProfileId : profiles[0].id,
     ));
     if (!conversations.length) {
-      const conversation = createConversation(profiles[0].id);
+      const conversation = createConversation(profiles[0].id, namespace);
       conversations = [conversation];
       await persistConversation(conversation);
     }
@@ -194,7 +212,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       auth,
       preferencesVersion: remotePreferences?.version ?? 0,
       personalization: remotePreferences?.personalization,
+      namespace,
     });
+    observeCloudSync((syncStatus, syncDetail) => set({ syncStatus, syncDetail }));
+    observeCloudConversation((changed, id) => set((state) => ({ conversations: changed
+      ? state.conversations.map((item) => item.id === id ? changed : item).toSorted((a, b) => b.updatedAt - a.updatedAt)
+      : state.conversations.filter((item) => item.id !== id) })));
+    if (auth.user) queueMicrotask(() => void pullCloudConversations(namespace).then((items) => {
+      if (get().namespace === namespace && items.length) set({ conversations: items.map((item) => normalizeConversation(item, profiles[0].id)) });
+      void drainConversationSync(namespace);
+    }));
   },
 
   createConversation: async () => {
@@ -202,41 +229,35 @@ export const useAppStore = create<AppState>((set, get) => ({
     const profileId = state.profiles.some((profile) => profile.id === state.lastProfileId)
       ? state.lastProfileId
       : state.profiles[0]?.id ?? DEFAULT_PROFILES[0].id;
-    const conversation = createConversation(profileId);
-    await persistConversation(conversation);
+    const conversation = createConversation(profileId, state.namespace);
     set((state) => ({
       conversations: [conversation, ...state.conversations],
       activeConversationId: conversation.id,
       view: 'chat',
       sidebarOpen: false,
     }));
+    queueMicrotask(() => void persistConversation(conversation).then(() => queueConversationSync(state.namespace, conversation.id, 'upsert')));
     return conversation.id;
   },
 
   selectConversation: (id) => set({ activeConversationId: id, view: 'chat', sidebarOpen: false }),
 
   deleteConversation: async (id) => {
-    const remaining = get().conversations.filter((conversation) => conversation.id !== id);
-    await db.conversations.delete(id);
-    await db.cache.where('conversationId').equals(id).delete();
+    const state = get(); const remaining = state.conversations.filter((conversation) => conversation.id !== id);
+    set({ conversations: remaining, activeConversationId: state.activeConversationId === id ? remaining[0]?.id ?? '' : state.activeConversationId });
+    queueMicrotask(() => void Promise.all([db.conversations.delete(id), db.cache.where('conversationId').equals(id).delete()]).then(() => queueConversationSync(state.namespace, id, 'delete')));
     if (!remaining.length) {
-      const conversation = createConversation(get().profiles[0]?.id);
-      await persistConversation(conversation);
+      const conversation = createConversation(get().profiles[0]?.id, state.namespace);
       set({ conversations: [conversation], activeConversationId: conversation.id });
+      queueMicrotask(() => void persistConversation(conversation).then(() => queueConversationSync(state.namespace, conversation.id, 'upsert')));
       return;
     }
-    set({
-      conversations: remaining,
-      activeConversationId:
-        get().activeConversationId === id ? remaining[0].id : get().activeConversationId,
-    });
   },
 
   updateConversation: async (id, patch) => {
     const current = get().conversations.find((conversation) => conversation.id === id);
     if (!current) return;
-    const updated = { ...current, ...patch, updatedAt: Date.now() };
-    await persistConversation(updated);
+    const updated = { ...current, ...patch, updatedAt: Date.now(), syncState: get().namespace === 'anonymous' ? 'local-only' as const : 'pending' as const };
     if (patch.providerProfileId) localStorage.setItem('stingy-last-profile', patch.providerProfileId);
     set((state) => ({
       conversations: state.conversations
@@ -244,6 +265,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         .toSorted((a, b) => b.updatedAt - a.updatedAt),
       lastProfileId: patch.providerProfileId ?? state.lastProfileId,
     }));
+    queueMicrotask(() => void persistConversation(updated).then(() => queueConversationSync(get().namespace, id, 'upsert')));
   },
 
   appendMessage: async (conversationId, message) => {
@@ -253,13 +275,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       ...current,
       messages: [...current.messages, message],
       updatedAt: Date.now(),
+      syncState: get().namespace === 'anonymous' ? 'local-only' : 'pending',
     };
-    await persistConversation(updated);
     set((state) => ({
       conversations: state.conversations
         .map((conversation) => (conversation.id === conversationId ? updated : conversation))
         .toSorted((a, b) => b.updatedAt - a.updatedAt),
     }));
+    queueMicrotask(() => void persistConversation(updated).then(() => queueConversationSync(get().namespace, conversationId, 'upsert')));
   },
 
   appendMessages: async (conversationId, messages) => {
@@ -270,35 +293,33 @@ export const useAppStore = create<AppState>((set, get) => ({
       ...current,
       messages: [...current.messages, ...messages],
       updatedAt: Date.now(),
+      syncState: get().namespace === 'anonymous' ? 'local-only' : 'pending',
     };
-    await persistConversation(updated);
     set((state) => ({
       conversations: state.conversations
         .map((conversation) => (conversation.id === conversationId ? updated : conversation))
         .toSorted((a, b) => b.updatedAt - a.updatedAt),
     }));
+    queueMicrotask(() => void persistConversation(updated).then(() => queueConversationSync(get().namespace, conversationId, 'upsert')));
   },
 
   updateSettings: async (patch) => {
     if (!get().auth.authenticated) {
       if (Object.keys(patch).length === 1 && patch.theme) {
         const value = { ...get().settings, theme: patch.theme };
-        await db.settings.put({ id: 'global', value });
         set({ settings: value });
+        queueMicrotask(() => void db.settings.put({ id: 'global', value }));
       }
       return;
     }
     const value = { ...get().settings, ...patch };
-    const state = get();
-    try {
-      const saved = await updateUserPreferences({ version: state.preferencesVersion, settings: value, favoriteModels: state.favoriteModels, personalization: state.personalization, onboardingStatus: state.auth.user?.onboardingStatus ?? 'complete', updatedAt: Date.now() });
-      await db.settings.put({ id: 'global', value: saved.settings, beforeExtreme: state.beforeExtreme });
-      set({ settings: saved.settings, preferencesVersion: saved.version, personalization: saved.personalization });
-    } catch (error) {
-      const latest = (error as Error & { latest?: UserPreferencesEnvelope }).latest;
-      if (latest) set({ settings: latest.settings, favoriteModels: latest.favoriteModels, preferencesVersion: latest.version, personalization: latest.personalization });
-      else throw error;
-    }
+    set({ settings: value });
+    queueMicrotask(() => void db.settings.put({ id: 'global', value, beforeExtreme: get().beforeExtreme }));
+    schedulePreferenceSync(patch,
+      () => ({ version: get().preferencesVersion, settings: get().settings, favoriteModels: get().favoriteModels, personalization: get().personalization, onboardingStatus: get().auth.user?.onboardingStatus ?? 'complete', updatedAt: Date.now() }),
+      (saved) => set({ settings: saved.settings, preferencesVersion: saved.version, personalization: saved.personalization, favoriteModels: saved.favoriteModels }),
+      (syncStatus, syncDetail) => set({ syncStatus, syncDetail }),
+    );
   },
 
   toggleExtreme: async (enabled) => {
@@ -345,13 +366,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setArtifactPanelOpen: (artifactPanelOpen) => set({ artifactPanelOpen }),
   setActiveArtifact: (activeArtifactId) => set({ activeArtifactId, artifactPanelOpen: Boolean(activeArtifactId) }),
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
-  setAdminToken: (adminToken) => {
-    if (typeof sessionStorage !== 'undefined') {
-      if (adminToken) sessionStorage.setItem('stingy-admin-token', adminToken);
-      else sessionStorage.removeItem('stingy-admin-token');
-    }
-    set({ adminToken, view: adminToken ? 'admin' : 'chat', sidebarOpen: false });
-  },
   applyPreferences: (value) => {
     set((state) => ({
       settings: value.settings,
@@ -361,8 +375,25 @@ export const useAppStore = create<AppState>((set, get) => ({
       auth: state.auth.user ? { authenticated: true, user: { ...state.auth.user, onboardingStatus: value.onboardingStatus } } : state.auth,
     }));
   },
+  importData: async (bundle) => {
+    const state = get(); const byId = new Map(state.conversations.map((item) => [item.id, item])); let added = 0; let updated = 0;
+    for (const incoming of bundle.conversations) {
+      const normalized = { ...normalizeConversation(incoming, state.profiles[0].id), namespace: state.namespace, syncState: state.namespace === 'anonymous' ? 'local-only' as const : 'pending' as const };
+      const current = byId.get(normalized.id);
+      if (!current) { byId.set(normalized.id, normalized); added += 1; }
+      else if (normalized.updatedAt > current.updatedAt) { byId.set(normalized.id, { ...normalized, revision: current.revision ?? 0 }); updated += 1; }
+    }
+    const conversations = [...byId.values()].toSorted((a, b) => b.updatedAt - a.updatedAt);
+    set({ conversations, settings: state.auth.authenticated ? { ...state.settings, ...bundle.settings } : state.settings, favoriteModels: bundle.favoriteModels.length ? bundle.favoriteModels : state.favoriteModels, personalization: bundle.personalization ?? state.personalization });
+    await db.conversations.bulkPut(conversations);
+    for (const conversation of conversations) if (state.namespace !== 'anonymous') await queueConversationSync(state.namespace, conversation.id, 'upsert');
+    if (state.auth.authenticated) await get().updateSettings(bundle.settings);
+    return { added, updated };
+  },
   logout: async () => {
     await logoutUser();
-    set({ auth: { authenticated: false }, settings: { ...ANONYMOUS_SETTINGS }, preferencesVersion: 0, personalization: undefined });
+    let conversations = await db.conversations.where('namespace').equals('anonymous').reverse().sortBy('updatedAt');
+    if (!conversations.length) { const conversation = createConversation(get().profiles[0]?.id, 'anonymous'); await persistConversation(conversation); conversations = [conversation]; }
+    set({ auth: { authenticated: false }, namespace: 'anonymous', conversations, activeConversationId: conversations[0].id, settings: { ...ANONYMOUS_SETTINGS }, preferencesVersion: 0, personalization: undefined, view: 'chat', syncStatus: 'idle' });
   },
 }));
