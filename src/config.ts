@@ -71,7 +71,7 @@ export const MODEL_OPTIONS: Record<ProviderKind, ModelOption[]> = {
 export const DEFAULT_PROFILES: ProviderProfile[] = [
   {
     id: 'stingy-free', name: 'StingyChat', kind: 'stingy', model: 'GLM-4.5-Flash', contextWindow: 128_000,
-    capabilities: { responses: false, webSearch: true, reasoning: false, reasoningEffort: false, promptCache: false, batch: false, structuredOutput: true, vision: false },
+    capabilities: { responses: false, webSearch: false, reasoning: false, reasoningEffort: false, promptCache: false, batch: false, structuredOutput: true, vision: false },
   },
   {
     id: 'openai-default',

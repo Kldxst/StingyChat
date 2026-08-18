@@ -1,20 +1,18 @@
 import { AlertTriangle, Box, Check, Download, ExternalLink, PlugZap, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useEffect, useMemo, useState } from 'react';
-import { fetchMarketplace, installPlugin, listInstalledPlugins, uninstallPlugin } from '../lib/marketplace';
+import { fetchMarketplace, installPlugin, listInstalledPlugins, matchesMarketplaceTab, uninstallPlugin, type MarketplaceTab } from '../lib/marketplace';
 import { pluginFormatLabel } from '../lib/pluginAdapters';
 import type { PluginInstallRecord, PluginManifest } from '../types';
 import { useAppStore } from '../store';
 import { connectHttpMcp, type ConnectedMcp } from '../lib/mcpClient';
 
 const LEVEL_LABEL = { native: '原生兼容', bridge: '本地桥接', partial: '部分兼容', unavailable: '不可用' } as const;
-type MarketTab = 'featured' | 'codex' | 'dsh' | 'mcp' | 'skills' | 'installed';
-
 export function PluginMarketplace({ projectId }: { projectId?: string }) {
   const canInstall = useAppStore((state) => Boolean(state.auth.user?.permissions.includes('plugin_install')));
   const [plugins, setPlugins] = useState<PluginManifest[]>([]);
   const [installed, setInstalled] = useState<PluginInstallRecord[]>([]);
-  const [tab, setTab] = useState<MarketTab>('featured');
+  const [tab, setTab] = useState<MarketplaceTab>('featured');
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState('');
@@ -28,11 +26,7 @@ export function PluginMarketplace({ projectId }: { projectId?: string }) {
     if (tab === 'installed') return installed.map((item) => item.manifest).filter((item) => `${item.name} ${item.description}`.toLowerCase().includes(query.toLowerCase()));
     return plugins.filter((plugin) => {
       if (query && !`${plugin.name} ${plugin.description} ${plugin.categories.join(' ')}`.toLowerCase().includes(query.toLowerCase())) return false;
-      if (tab === 'featured') return plugin.featured;
-      if (tab === 'codex') return plugin.format === 'codex-agent-plugin';
-      if (tab === 'dsh') return plugin.format === 'dsh-bundle';
-      if (tab === 'mcp') return plugin.format === 'mcp';
-      return plugin.format === 'agent-skill' || plugin.format === 'stingy';
+      return matchesMarketplaceTab(plugin, tab);
     });
   }, [installed, plugins, query, tab]);
 
@@ -50,7 +44,7 @@ export function PluginMarketplace({ projectId }: { projectId?: string }) {
         <div className="plugin-permissions">{plugin.permissions.length ? plugin.permissions.slice(0, 4).map((permission) => <span key={permission}>{permission}</span>) : <span>无需额外权限</span>}</div>
         <div className="plugin-reason"><ShieldCheck size={13} /><span>{plugin.compatibility.reasons[0]}</span></div>
         <footer><a href={plugin.sourceUrl} target="_blank" rel="noreferrer">来源 <ExternalLink size={12} /></a>{active ? <button className="plugin-remove" onClick={async () => { if (record) await uninstallPlugin(record.id); await refreshInstalled(); }}><Trash2 size={14} /> 卸载</button> : <button disabled={!canInstall || plugin.compatibility.level === 'unavailable'} title={!canInstall ? '当前账号没有插件安装权限' : undefined} onClick={async () => { try { await installPlugin(plugin, projectId); await refreshInstalled(); } catch (error) { setNotice(error instanceof Error ? error.message : '安装失败'); } }}><Download size={14} /> 安装</button>}</footer>
-        {record?.state === 'pending-device-install' ? <div className="bridge-required">需连接本地桥后完成安装</div> : active ? <div className="installed-state"><Check size={12} /> 已在当前设备启用</div> : null}
+        {record?.state === 'pending-device-install' ? <div className="bridge-required">需连接本地桥后完成安装</div> : record?.state === 'pending-configuration' ? <div className="bridge-required">需在 MCP 标签页完成服务连接</div> : active ? <div className="installed-state"><Check size={12} /> 已启用并加入工程上下文</div> : null}
       </motion.article>;
     })}</AnimatePresence>{!loading && !visible.length ? <div className="market-empty">当前分类暂无匹配插件</div> : null}</div>
   </section>;

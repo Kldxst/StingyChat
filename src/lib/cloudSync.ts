@@ -17,7 +17,7 @@ export function observeCloudConversation(next: (conversation: Conversation | und
 export async function queueConversationSync(namespace: string, conversationId: string, operation: 'upsert' | 'delete'): Promise<void> {
   if (!namespace.startsWith('user:')) return;
   const previous = await db.conversationSync.where('[namespace+conversationId]').equals([namespace, conversationId]).first();
-  if (previous?.id) await db.conversationSync.update(previous.id, { operation, updatedAt: Date.now() });
+  if (previous?.id) await db.conversationSync.update(previous.id, { operation, updatedAt: Math.max(Date.now(), previous.updatedAt + 1) });
   else await db.conversationSync.add({ namespace, conversationId, operation, updatedAt: Date.now() });
   notify('pending'); queueMicrotask(() => void drainConversationSync(namespace));
 }
@@ -48,7 +48,22 @@ export async function drainConversationSync(namespace: string): Promise<void> {
       else if (response.status === 413) { if (conversation) await db.conversations.update(conversation.id, { syncState: 'local-only' }); notify('error', '云端历史空间已满'); await db.conversationSync.delete(item.id); continue; }
       else if (!response.ok) throw new Error(`同步失败 (${response.status})`);
       else if (conversation && item.operation === 'upsert' && response.status !== 204) {
-        const payload = await response.json() as { revision: number }; const synced = { ...conversation, revision: payload.revision, syncState: 'synced' as const }; await db.conversations.put(synced); conversationListener?.(synced, synced.id);
+        const payload = await response.json() as { revision: number };
+        const [latestQueueItem, latestConversation] = await Promise.all([
+          db.conversationSync.get(item.id),
+          db.conversations.get(item.conversationId),
+        ]);
+        const changedWhileSending = latestQueueItem?.updatedAt !== item.updatedAt
+          || Boolean(latestConversation && latestConversation.updatedAt > conversation.updatedAt);
+        if (changedWhileSending && latestConversation) {
+          const pending = { ...latestConversation, revision: payload.revision, syncState: 'pending' as const };
+          await db.conversations.put(pending);
+          conversationListener?.(pending, pending.id);
+          continue;
+        }
+        const synced = { ...conversation, revision: payload.revision, syncState: 'synced' as const };
+        await db.conversations.put(synced);
+        conversationListener?.(synced, synced.id);
       }
       await db.conversationSync.delete(item.id);
     }

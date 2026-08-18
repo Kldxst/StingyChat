@@ -32,8 +32,12 @@ describe('project mode integration', () => {
 
   it('keeps independent engineering chat available without a connected directory', () => {
     const source = readFileSync(new URL('../src/components/ProjectView.tsx', import.meta.url), 'utf8');
+    const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
     expect(source).toContain("project?.id ?? sessionId.current");
-    expect(source).toContain("permissionMode: project?.permissionMode ?? 'read'");
+    expect(source).toContain('await streamChat({');
+    expect(source).toContain('projectProfileId');
+    expect(source).toContain("loadProviderSecret(profile.id)");
+    expect(app).toContain('onSelectProfile={(next) => setProjectProfileId(next.id)}');
     expect(source).toContain('无需打开目录即可开始');
   });
 
@@ -47,11 +51,14 @@ describe('project mode integration', () => {
   });
 
   it('offers a materially larger curated catalog with explicit compatible licenses', () => {
-    expect(CURATED_PLUGINS.length).toBeGreaterThanOrEqual(11);
+    expect(CURATED_PLUGINS.length).toBeGreaterThanOrEqual(17);
     expect(CURATED_PLUGINS.map((plugin) => plugin.id)).toEqual(expect.arrayContaining([
       'mcp:microsoft-playwright', 'mcp:github-official', 'mcp:upstash-context7',
       'mcp:cloudflare-official', 'mcp:desktop-commander', 'mcp:chrome-devtools',
+      'mcp:notion-official', 'mcp:stripe-official', 'mcp:aws-labs',
+      'mcp:microsoft-catalog', 'mcp:microsoft-learn', 'mcp:markitdown',
     ]));
     expect(CURATED_PLUGINS.every((plugin) => Boolean(plugin.license))).toBe(true);
+    expect(CURATED_PLUGINS.every((plugin) => plugin.featured)).toBe(true);
   });
 });

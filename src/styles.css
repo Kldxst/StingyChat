@@ -115,6 +115,7 @@ input::placeholder, textarea::placeholder { color: #536059; }
 .citation-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
 .citation-row span { display: flex; align-items: center; gap: 4px; color: var(--info); background: rgba(131,181,244,.08); border: 1px solid rgba(131,181,244,.16); padding: 3px 6px; border-radius: 5px; font-size: 9px; }
 .is-streaming .message-body::after { content: ""; display: inline-block; width: 6px; height: 15px; margin-left: 3px; vertical-align: -2px; background: var(--accent); animation: blink 1s steps(1) infinite; }
+.project-chat-message.is-streaming > p::after { content: ""; display: inline-block; width: 6px; height: 14px; margin-left: 4px; vertical-align: -2px; background: var(--accent); border-radius: 2px; animation: blink .8s steps(1) infinite; }
 .thinking-line { max-width: 820px; margin: 0 auto 18px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
 .inline-error { max-width: 820px; margin: 12px auto; padding: 10px 12px; color: #ffc0bb; background: rgba(240,125,116,.09); border: 1px solid rgba(240,125,116,.22); border-radius: 7px; font-size: 11px; }
 

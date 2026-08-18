@@ -428,9 +428,10 @@ export function ChatView() {
       const reasoningPromise = settings.reasoningEnabled && !route.profile.capabilities.reasoning
         ? reasonWithGlm(rawPrompt, currentAssistContext).catch(() => '')
         : Promise.resolve('');
+      const emptySearch = { text: '', citations: [] as KnowledgeCitation[] };
       const searchPromise = settings.webSearch && !route.profile.capabilities.webSearch
-        ? searchWithGlm(rawPrompt).catch(() => ({ text: '', citations: [] }))
-        : Promise.resolve({ text: '', citations: [] as KnowledgeCitation[] });
+        ? withinDeadline(searchWithGlm(rawPrompt).catch(() => emptySearch), 7_000, emptySearch, controller.signal)
+        : Promise.resolve({ value: emptySearch, timedOut: false, durationMs: 0 });
       const imagePromise = !route.profile.capabilities.vision
         ? Promise.all(attachments.filter((attachment) => attachment.kind === 'image' && attachment.dataUrl).map(async (image) => {
             const description = await understandImageWithGlm(rawPrompt, image.dataUrl!)
@@ -448,11 +449,16 @@ export function ChatView() {
       skipEnhancementRef.current = skip;
       const enhanced = await Promise.race([
         Promise.all([reasoningPromise, searchPromise, imagePromise]),
-        skipped.then(() => ['', { text: '', citations: [] as KnowledgeCitation[] }, [] as string[]] as const),
+        skipped.then(() => ['', { value: emptySearch, timedOut: false, durationMs: 0 }, [] as string[]] as const),
         aborted,
       ]);
       skipEnhancementRef.current = undefined;
-      const [auxiliaryReasoning, searched, imageBlocks] = enhanced;
+      const [auxiliaryReasoning, searchResult, imageBlocks] = enhanced;
+      if (searchResult.timedOut) {
+        route.reason = [route.reason, '联网增强等待超时，本轮已跳过'].filter(Boolean).join(' · ');
+        setPreparationPhase('联网增强超时，正在直接连接模型');
+      }
+      const searched = searchResult.value;
       if (auxiliaryReasoning) setLiveReasoning(auxiliaryReasoning);
       const webBlock = searched.text;
       citations = [...searched.citations, ...citations].slice(0, 20);

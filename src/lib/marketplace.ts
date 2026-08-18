@@ -1,7 +1,17 @@
 import { db } from './db';
-import type { PluginInstallRecord, PluginManifest } from '../types';
+import type { PluginInstallRecord, PluginManifest, ProjectPluginCapability } from '../types';
 
-const ALLOWED_LICENSES = new Set(['GPL-3.0-only', 'GPL-3.0-or-later', 'LGPL-3.0-only', 'LGPL-3.0-or-later', 'Apache-2.0', 'MIT', 'BSD-2-Clause', 'BSD-3-Clause', 'MPL-2.0', 'ISC']);
+const ALLOWED_LICENSES = new Set(['GPL-3.0-only', 'GPL-3.0-or-later', 'LGPL-3.0-only', 'LGPL-3.0-or-later', 'Apache-2.0', 'MIT', 'BSD-2-Clause', 'BSD-3-Clause', 'MPL-2.0', 'ISC', 'CC-BY-4.0']);
+
+export type MarketplaceTab = 'featured' | 'codex' | 'dsh' | 'mcp' | 'skills' | 'installed';
+
+export function matchesMarketplaceTab(plugin: PluginManifest, tab: Exclude<MarketplaceTab, 'installed'>): boolean {
+  if (tab === 'featured') return Boolean(plugin.featured);
+  if (tab === 'codex') return plugin.format === 'codex-agent-plugin' || plugin.categories.includes('Codex');
+  if (tab === 'dsh') return plugin.format === 'dsh-bundle' || plugin.categories.includes('DeepSeek Harness');
+  if (tab === 'mcp') return plugin.format === 'mcp';
+  return plugin.format === 'agent-skill' || plugin.format === 'stingy';
+}
 
 export function assertPluginInstallable(manifest: PluginManifest): void {
   if (!manifest.license) throw new Error('插件未声明许可证，不能安装');
@@ -28,10 +38,27 @@ export async function installPlugin(manifest: PluginManifest, projectId?: string
   const permissionChanges = addedPermissions(current?.manifest, manifest);
   if (current && permissionChanges.length) throw new Error(`更新新增权限：${permissionChanges.join('、')}，需要重新确认后安装`);
   const now = Date.now();
-  const record: PluginInstallRecord = { id: current?.id ?? crypto.randomUUID(), pluginId: manifest.id, manifest, previousManifest: current?.manifest, enabled: true, installScope: projectId ? 'project' : 'global', projectId, installedAt: current?.installedAt ?? now, updatedAt: now, state: manifest.compatibility.requiresBridge ? 'pending-device-install' : 'installed' };
+  const state: PluginInstallRecord['state'] = manifest.compatibility.requiresBridge
+    ? 'pending-device-install'
+    : manifest.format === 'mcp' ? 'pending-configuration' : 'installed';
+  const record: PluginInstallRecord = { id: current?.id ?? crypto.randomUUID(), pluginId: manifest.id, manifest, previousManifest: current?.manifest, enabled: true, installScope: projectId ? 'project' : 'global', projectId, installedAt: current?.installedAt ?? now, updatedAt: now, state };
   await db.installedPlugins.put(record);
   return record;
 }
 
 export async function uninstallPlugin(id: string): Promise<void> { await db.installedPlugins.delete(id); }
 export async function listInstalledPlugins(): Promise<PluginInstallRecord[]> { return db.installedPlugins.orderBy('updatedAt').reverse().toArray(); }
+
+export async function listActiveProjectPluginCapabilities(projectId?: string): Promise<ProjectPluginCapability[]> {
+  const records = await listInstalledPlugins();
+  return records
+    .filter((record) => record.enabled && record.state === 'installed' && (record.installScope === 'global' || record.projectId === projectId))
+    .slice(0, 20)
+    .map(({ manifest }) => ({
+      id: manifest.id,
+      name: manifest.name,
+      format: manifest.format,
+      description: manifest.description,
+      supportedFeatures: manifest.compatibility.supportedFeatures.slice(0, 12),
+    }));
+}

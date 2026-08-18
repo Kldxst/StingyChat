@@ -144,4 +144,18 @@ describe('provider request mapping', () => {
     const body = JSON.parse(String(config.init.body)) as Record<string, unknown>;
     expect(body.thinking).toEqual({ type: 'disabled' });
   });
+
+  it('maps StingyChat web search to the GLM server-side tool and normalizes sources', () => {
+    const profile: ProviderProfile = {
+      ...openai,
+      id: 'stingy-search', kind: 'stingy', name: 'StingyChat', model: 'GLM-4.5-Flash',
+      capabilities: { ...openai.capabilities, responses: false, reasoning: false, reasoningEffort: false, batch: false },
+    };
+    const config = createProviderConfig({ ...request(profile), settings: { ...DEFAULT_SETTINGS, webSearch: true, reasoningEnabled: false } }, 'worker-secret');
+    const body = JSON.parse(String(config.init.body)) as Record<string, unknown>;
+    expect(body.tool_choice).toBe('auto');
+    expect(body.tools).toMatchObject([{ type: 'web_search', web_search: { enable: true, search_result: true } }]);
+    expect(config.parse({ web_search: [{ title: '来源', link: 'https://example.com/current', content: '最新内容' }] }).citations)
+      .toMatchObject([{ sourceType: 'web', url: 'https://example.com/current', documentName: '来源', excerpt: '最新内容' }]);
+  });
 });

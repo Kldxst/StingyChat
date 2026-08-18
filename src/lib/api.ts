@@ -3,6 +3,7 @@ import type {
   ConversationMemory,
   ProviderProfile,
   StreamEvent,
+  ProjectPluginCapability,
 } from '../types';
 import { consumeEventStream } from './sse';
 import { loadPersonalGlmSecret } from './crypto';
@@ -22,7 +23,7 @@ async function jsonRequest<T>(path: string, body: unknown, headers?: HeadersInit
   return payload;
 }
 
-function emitGlmStatus(status: GlmQueueStatus | { state: 'unavailable'; requestId: string; message: string }) {
+function emitGlmStatus(status: GlmQueueStatus | { state: 'unavailable'; requestId: string; operation?: string; message: string }) {
   if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('stingy:glm-status', { detail: status }));
 }
 
@@ -46,7 +47,7 @@ async function glmJsonRequest<T>(path: string, body: unknown, operation: string,
     if (settled || usesPersonalKey) return;
     try {
       const response = await fetch(`/api/assist/queue/${encodeURIComponent(requestId)}`, { cache: 'no-store' });
-      if (response.ok) emitGlmStatus(await response.json() as GlmQueueStatus);
+      if (!settled && response.ok) emitGlmStatus(await response.json() as GlmQueueStatus);
     } catch {
       // Queue visibility is best-effort and never blocks the actual task.
     }
@@ -59,10 +60,11 @@ async function glmJsonRequest<T>(path: string, body: unknown, operation: string,
       'x-glm-request-id': requestId,
       ...personalHeaders,
     }, signal);
+    settled = true;
     emitGlmStatus({ requestId, state: 'completed', operation, position: 0, queuedAt: Date.now(), estimatedWaitMs: 0 });
     return result;
   } catch (error) {
-    emitGlmStatus({ state: 'unavailable', requestId, message: error instanceof Error ? error.message : '智能助手服务暂不可用' });
+    emitGlmStatus({ state: 'unavailable', requestId, operation, message: error instanceof Error ? error.message : '智能助手服务暂不可用' });
     throw error;
   } finally {
     settled = true;
@@ -76,6 +78,7 @@ interface ProjectAgentStepRequest {
   permissionMode: 'read' | 'workspace' | 'full';
   activeFile?: { path: string; content: string; language: string };
   fileIndex?: Array<{ path: string; language: string; size: number }>;
+  plugins?: ProjectPluginCapability[];
 }
 
 interface ProjectAgentStepResponse {
@@ -101,7 +104,7 @@ export async function streamChat(
     if (!queued || settled) return;
     try {
       const response = await fetch(`/api/assist/queue/${encodeURIComponent(requestId)}`, { cache: 'no-store' });
-      if (response.ok) emitGlmStatus(await response.json() as GlmQueueStatus);
+      if (!settled && response.ok) emitGlmStatus(await response.json() as GlmQueueStatus);
     } catch {
       // Queue visibility must not interrupt the chat stream.
     }
@@ -126,6 +129,7 @@ export async function streamChat(
     });
     await consumeEventStream(response, onEvent);
     if (request.profile.kind === 'stingy') {
+      settled = true;
       emitGlmStatus({ requestId, state: 'completed', operation: 'StingyChat', position: 0, queuedAt: Date.now(), estimatedWaitMs: 0 });
     }
   } finally {

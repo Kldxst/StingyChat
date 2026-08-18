@@ -243,7 +243,7 @@ export function Composer({
               disabled={!canSearch}
               aria-pressed={settings.webSearch}
               onClick={() => void updateSettings({ webSearch: !settings.webSearch })}
-              title={profile.capabilities.webSearch ? '允许模型使用联网搜索' : '允许联网；当前模型可能忽略此选项'}
+              title={profile.kind === 'stingy' ? '由智能助手联网检索并注入可验证来源' : profile.capabilities.webSearch ? '允许模型使用联网搜索' : '允许联网；当前模型可能忽略此选项'}
             >
               <Globe2 size={15} /> 联网
             </button>

@@ -7,19 +7,23 @@ import {
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { projectAgentStep } from '../lib/api';
+import { streamChat } from '../lib/api';
 import { pairBridge, type BridgeCapabilities } from '../lib/bridge';
 import { syncBrowserGit } from '../lib/browserGit';
+import { loadProviderSecret } from '../lib/crypto';
 import { db } from '../lib/db';
+import { requiresUserApiKey } from '../lib/providerAuth';
 import {
   appendProjectEvent, createCheckpoint, listProjectFiles, openProjectDirectory,
   restoreCheckpoint, saveProjectFile,
 } from '../lib/projectWorkspace';
+import { estimateTokens } from '../lib/tokens';
 import { useAppStore } from '../store';
 import type {
   ProjectCheckpoint, ProjectEvent, ProjectFile, ProjectPermissionMode, ProjectWorkspace,
 } from '../types';
 import { PluginMarketplace } from './PluginMarketplace';
+import { listActiveProjectPluginCapabilities } from '../lib/marketplace';
 
 type ProjectSurface = 'chat' | 'editor' | 'changes' | 'plugins' | 'bridge';
 const MODE_LABEL: Record<ProjectPermissionMode, string> = { read: '只读', workspace: '工作区', full: '完全访问' };
@@ -40,6 +44,10 @@ function localEvent(projectId: string, type: ProjectEvent['type'], content: stri
 export function ProjectView() {
   const auth = useAppStore((state) => state.auth);
   const namespace = useAppStore((state) => state.namespace);
+  const profiles = useAppStore((state) => state.profiles);
+  const projectProfileId = useAppStore((state) => state.projectProfileId);
+  const settings = useAppStore((state) => state.settings);
+  const setSettingsOpen = useAppStore((state) => state.setSettingsOpen);
   const sessionId = useRef(crypto.randomUUID());
   const abortRef = useRef<AbortController | undefined>(undefined);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -57,6 +65,7 @@ export function ProjectView() {
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState('');
+  const [streamingText, setStreamingText] = useState('');
   const [failedPrompt, setFailedPrompt] = useState('');
   const [notice, setNotice] = useState('');
   const [bridgeCode, setBridgeCode] = useState('');
@@ -66,6 +75,7 @@ export function ProjectView() {
   const [gitStatus, setGitStatus] = useState<string[]>([]);
   const project = projects.find((item) => item.id === activeId);
   const activeFile = files.find((item) => item.path === activePath);
+  const profile = profiles.find((item) => item.id === projectProfileId) ?? profiles[0];
   const canProject = Boolean(auth.user?.permissions.includes('project_mode'));
   const canFull = Boolean(auth.user?.permissions.includes('project_full_access'));
 
@@ -153,38 +163,64 @@ export function ProjectView() {
     return event;
   };
   const askAgent = async () => {
-    if (!prompt.trim() || busy) return;
+    if (!prompt.trim() || busy || !profile) return;
     const question = prompt.trim();
     setPrompt('');
     setBusy(true);
+    setStreamingText('');
     setPhase('正在建立工程上下文');
     setNotice('');
     await recordEvent('user', question);
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      setPhase(project ? `正在分析 ${files.length} 个文件的索引` : '正在启动独立工程对话');
-      const payload = await projectAgentStep({
-        projectId: project?.id ?? sessionId.current,
-        prompt: question,
-        permissionMode: project?.permissionMode ?? 'read',
-        activeFile: activeFile ? { path: activeFile.path, content: draft.slice(0, 80_000), language: activeFile.language } : undefined,
-        fileIndex: files.map(({ path, language, size }) => ({ path, language, size })).slice(0, 1_000),
-      }, controller.signal);
-      setPhase('正在整理结果');
-      if (payload.files?.length && project && project.permissionMode !== 'read') {
-        await createCheckpoint(project.id, `智能助手修改前 · ${question.slice(0, 30)}`);
-        for (const proposal of payload.files.slice(0, 20)) {
-          if (proposal.path.includes('..')) continue;
-          const existing = files.find((item) => item.path === proposal.path) ?? {
-            id: `${project.id}:${proposal.path}`, projectId: project.id, path: proposal.path,
-            content: '', language: 'plaintext', size: 0, updatedAt: Date.now(),
-          };
-          await saveProjectFile(project, existing, proposal.content);
-        }
-        setFiles(await listProjectFiles(project.id));
+      setPhase(project ? `正在读取 ${files.length} 个文件的索引` : '正在启动独立工程对话');
+      const [plugins, apiKey] = await Promise.all([
+        listActiveProjectPluginCapabilities(project?.id),
+        requiresUserApiKey(profile) ? loadProviderSecret(profile.id) : Promise.resolve(''),
+      ]);
+      if (requiresUserApiKey(profile) && !apiKey) {
+        setSettingsOpen(true);
+        throw new Error(`请先在设置中保存 ${profile.name} API Key`);
       }
-      await recordEvent('assistant', payload.summary);
+      const fileIndex = files.slice(0, 500).map(({ path, language, size }) => `${path} · ${language} · ${size}B`).join('\n');
+      const pluginContext = plugins.map((item) => `${item.name}：${item.description}（${item.supportedFeatures.join('、')}）`).join('\n');
+      const systemPrompt = [
+        '你是 StingyChat 工程智能助手。像正常聊天一样直接回答工程问题；结论应可执行、准确且简洁。',
+        '不得声称已经执行未实际提供结果的命令、MCP、Hook 或文件修改。需要更多文件时明确列出文件路径。',
+        project ? `当前项目：${project.name}；权限：${MODE_LABEL[project.permissionMode]}。` : '当前为独立工程对话，尚未连接本地目录。',
+        activeFile ? `当前文件 ${activeFile.path}：\n${draft.slice(0, 40_000)}` : '',
+        fileIndex ? `项目文件索引：\n${fileIndex}` : '',
+        pluginContext ? `已启用能力：\n${pluginContext}` : '',
+      ].filter(Boolean).join('\n\n');
+      const history = events.flatMap((event) => event.type === 'user' || event.type === 'assistant'
+        ? [{ role: event.type, content: event.content }]
+        : []).slice(-16);
+      const messages = [...history, { role: 'user' as const, content: question }];
+      const estimated = estimateTokens([systemPrompt, ...messages.map((message) => `${message.role}: ${message.content}`)].join('\n'));
+      let answer = '';
+      setPhase('正在连接模型');
+      await streamChat({
+        conversationId: project?.id ?? sessionId.current,
+        profile,
+        messages,
+        systemPrompt,
+        settings: { ...settings, modelRouting: false },
+        estimatedBaseline: estimated,
+        estimatedSent: estimated,
+        citations: [],
+        tokenizer: 'heuristic',
+      }, apiKey ?? '', (event) => {
+        if (event.type === 'accepted') setPhase('请求已接收');
+        else if (event.type === 'upstream_connected') setPhase('模型已连接');
+        else if (event.type === 'first_token') setPhase('正在生成');
+        else if (event.type === 'delta') {
+          answer += event.text;
+          setStreamingText(answer);
+        } else if (event.type === 'error') throw new Error(event.message);
+      }, controller.signal);
+      if (!answer.trim()) throw new Error('模型没有返回文本内容');
+      await recordEvent('assistant', answer);
       setFailedPrompt('');
     } catch (error) {
       const aborted = error instanceof DOMException && error.name === 'AbortError';
@@ -195,6 +231,7 @@ export function ProjectView() {
       abortRef.current = undefined;
       setBusy(false);
       setPhase('');
+      setStreamingText('');
     }
   };
 
@@ -224,6 +261,7 @@ export function ProjectView() {
           <div className="project-chat-stream">
             {!events.length ? <div className="project-chat-empty"><span><Braces size={28} /></span><h1>工程对话</h1><p>{project ? `已连接 ${project.name}。可以询问代码、定位问题或提出修改任务。` : '可以先讨论架构、代码与调试方案，需要读取或修改文件时再连接项目。'}</p><div><button onClick={() => setPrompt('检查当前项目的结构并指出最优先处理的问题')}>检查项目结构</button><button onClick={() => setPrompt('为这个工程任务制定可执行的实现步骤')}>制定实现步骤</button></div></div> : null}
             {events.map((event) => <article key={event.id} className={`project-chat-message event-${event.type}`}><header><span>{event.type === 'user' ? '你' : event.type === 'assistant' ? '智能助手' : event.type === 'error' ? '请求失败' : '工程事件'}</span><time>{new Date(event.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</time></header><p>{event.content}</p>{event.type === 'error' && failedPrompt ? <button className="project-retry-button" onClick={() => { setPrompt(failedPrompt); setFailedPrompt(''); }}><RotateCcw size={13} /> 放回输入框重试</button> : null}</article>)}
+            {streamingText ? <article className="project-chat-message event-assistant is-streaming"><header><span>智能助手</span><small>{profile.model}</small></header><p>{streamingText}</p></article> : null}
             {busy ? <div className="project-agent-progress"><LoaderCircle className="spin" size={17} /><div><strong>智能助手正在处理</strong><small>{phase}</small></div><button onClick={() => abortRef.current?.abort()}><Square size={13} /> 停止</button></div> : null}
             <div ref={chatEndRef} />
           </div>

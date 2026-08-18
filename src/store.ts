@@ -102,6 +102,7 @@ interface AppState {
   favoriteModels: FavoriteModel[];
   activeConversationId: string;
   lastProfileId: string;
+  projectProfileId: string;
   settings: OptimizationSettings;
   auth: AuthSessionState;
   preferencesVersion: number;
@@ -134,6 +135,7 @@ interface AppState {
   setArtifactPanelOpen: (open: boolean) => void;
   setActiveArtifact: (id?: string) => void;
   setSettingsOpen: (open: boolean) => void;
+  setProjectProfileId: (profileId: string) => void;
   applyPreferences: (value: UserPreferencesEnvelope) => void;
   importData: (bundle: DataExportBundle) => Promise<{ added: number; updated: number }>;
   logout: () => Promise<void>;
@@ -150,6 +152,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   favoriteModels: loadFavoriteModels(DEFAULT_PROFILES),
   activeConversationId: '',
   lastProfileId: DEFAULT_PROFILES[0].id,
+  projectProfileId: DEFAULT_PROFILES[0].id,
   settings: ANONYMOUS_SETTINGS,
   auth: { authenticated: false },
   preferencesVersion: 0,
@@ -200,6 +203,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     const lastProfileId = profiles.some((profile) => profile.id === rememberedProfileId)
       ? rememberedProfileId!
       : conversations[0]?.providerProfileId ?? profiles[0].id;
+    const rememberedProjectProfileId = localStorage.getItem('stingy-project-profile');
+    const projectProfileId = profiles.some((profile) => profile.id === rememberedProjectProfileId)
+      ? rememberedProjectProfileId!
+      : lastProfileId;
     set({
       initialized: true,
       profiles,
@@ -207,6 +214,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       conversations,
       activeConversationId: conversations[0].id,
       lastProfileId,
+      projectProfileId,
       settings: auth.authenticated ? { ...DEFAULT_SETTINGS, ...(remotePreferences?.settings ?? settingsRecord?.value ?? {}) } : { ...ANONYMOUS_SETTINGS },
       beforeExtreme: settingsRecord?.beforeExtreme,
       auth,
@@ -372,6 +380,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   setArtifactPanelOpen: (artifactPanelOpen) => set({ artifactPanelOpen }),
   setActiveArtifact: (activeArtifactId) => set({ activeArtifactId, artifactPanelOpen: Boolean(activeArtifactId) }),
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
+  setProjectProfileId: (projectProfileId) => {
+    if (typeof localStorage !== 'undefined') localStorage.setItem('stingy-project-profile', projectProfileId);
+    set({ projectProfileId });
+  },
   applyPreferences: (value) => {
     set((state) => ({
       settings: value.settings,

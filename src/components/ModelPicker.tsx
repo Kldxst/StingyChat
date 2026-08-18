@@ -18,10 +18,12 @@ export function ModelPicker({
   conversationId,
   profile,
   variant = 'topbar',
+  onSelectProfile,
 }: {
-  conversationId: string;
+  conversationId?: string;
   profile: ProviderProfile;
   variant?: 'topbar' | 'settings';
+  onSelectProfile?: (profile: ProviderProfile) => void | Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [providerKind, setProviderKind] = useState<ProviderKind>(profile.kind);
@@ -85,7 +87,8 @@ export function ModelPicker({
   const models = MODEL_OPTIONS[selectedProvider.kind];
 
   const chooseProfile = async (next: ProviderProfile) => {
-    await updateConversation(conversationId, { providerProfileId: next.id });
+    if (onSelectProfile) await onSelectProfile(next);
+    else if (conversationId) await updateConversation(conversationId, { providerProfileId: next.id });
     setProviderKind(next.kind);
     setOpen(false);
   };

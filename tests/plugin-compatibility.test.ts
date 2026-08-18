@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { addedPermissions, assertPluginInstallable } from '../src/lib/marketplace';
+import 'fake-indexeddb/auto';
+import { addedPermissions, assertPluginInstallable, installPlugin, listActiveProjectPluginCapabilities, matchesMarketplaceTab } from '../src/lib/marketplace';
 import { normalizeMcpToolName, parseCodexPlugin, parseDshBundle } from '../src/lib/pluginAdapters';
 import type { PluginManifest } from '../src/types';
 
@@ -28,5 +29,21 @@ describe('plugin compatibility adapters', () => {
     expect(() => assertPluginInstallable(base as PluginManifest)).toThrow('许可证');
     expect(() => assertPluginInstallable({ ...base, license: 'AGPL-3.0-only' } as PluginManifest)).toThrow('AGPL');
     expect(addedPermissions({ ...base, license: 'MIT' } as PluginManifest, { ...base, license: 'MIT', permissions: ['files:read', 'network'] } as PluginManifest)).toEqual(['network']);
+  });
+
+  it('includes curated adapters in their product tabs and permits reviewed CC BY metadata', () => {
+    const base = { id: 'codex', name: 'Codex adapter', version: '1', description: '', format: 'stingy', sourceUrl: 'https://example.com', license: 'CC-BY-4.0', permissions: [], compatibility: { level: 'native', reasons: [], requiresBridge: false, supportedFeatures: ['review'], unsupportedFeatures: [] }, categories: ['Codex'], featured: true } satisfies PluginManifest;
+    expect(matchesMarketplaceTab(base, 'codex')).toBe(true);
+    expect(() => assertPluginInstallable(base)).not.toThrow();
+  });
+
+  it('passes only active installed plugin metadata into project requests', async () => {
+    const native = { id: `skill-${crypto.randomUUID()}`, name: 'Review skill', version: '1', description: 'Review changes', format: 'agent-skill', sourceUrl: 'https://example.com', license: 'MIT', permissions: [], compatibility: { level: 'native', reasons: [], requiresBridge: false, supportedFeatures: ['review'], unsupportedFeatures: [] }, categories: ['Skills'] } satisfies PluginManifest;
+    const pending = { ...native, id: `mcp-${crypto.randomUUID()}`, name: 'Remote MCP', format: 'mcp' as const };
+    await installPlugin(native);
+    const pendingRecord = await installPlugin(pending);
+    expect(pendingRecord.state).toBe('pending-configuration');
+    await expect(listActiveProjectPluginCapabilities()).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ id: native.id, supportedFeatures: ['review'] })]));
+    expect((await listActiveProjectPluginCapabilities()).some((plugin) => plugin.id === pending.id)).toBe(false);
   });
 });

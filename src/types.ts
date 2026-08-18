@@ -136,8 +136,16 @@ export interface PluginInstallRecord {
   projectId?: string;
   installedAt: number;
   updatedAt: number;
-  state: 'installed' | 'disabled' | 'update-available' | 'failed' | 'pending-device-install';
+  state: 'installed' | 'disabled' | 'update-available' | 'failed' | 'pending-device-install' | 'pending-configuration';
   previousManifest?: PluginManifest;
+}
+
+export interface ProjectPluginCapability {
+  id: string;
+  name: string;
+  format: PluginFormat;
+  description: string;
+  supportedFeatures: string[];
 }
 
 export interface PreparationTrace {

@@ -26,14 +26,17 @@ export default function App() {
   const profiles = useAppStore((state) => state.profiles);
   const conversations = useAppStore((state) => state.conversations);
   const activeId = useAppStore((state) => state.activeConversationId);
+  const projectProfileId = useAppStore((state) => state.projectProfileId);
   const settings = useAppStore((state) => state.settings);
   const settingsOpen = useAppStore((state) => state.settingsOpen);
   const sidebarCollapsed = useAppStore((state) => state.sidebarCollapsed);
   const artifactPanelOpen = useAppStore((state) => state.artifactPanelOpen);
   const auth = useAppStore((state) => state.auth);
   const setSidebarOpen = useAppStore((state) => state.setSidebarOpen);
+  const setProjectProfileId = useAppStore((state) => state.setProjectProfileId);
   const conversation = conversations.find((item) => item.id === activeId);
   const profile = profiles.find((item) => item.id === conversation?.providerProfileId) ?? profiles[0];
+  const projectProfile = profiles.find((item) => item.id === projectProfileId) ?? profile;
 
   useEffect(() => { void initialize(); }, [initialize]);
   useEffect(() => {
@@ -76,6 +79,8 @@ export default function App() {
           </div>
           {view === 'chat' ? (
             <ModelPicker conversationId={conversation.id} profile={profile} />
+          ) : view === 'project' ? (
+            <ModelPicker profile={projectProfile} onSelectProfile={(next) => setProjectProfileId(next.id)} />
           ) : <strong className="workspace-title">{pageTitle}</strong>}
           <div className="topbar-actions">
             {settings.extremeMode ? <span className="extreme-badge"><Zap size={13} /> 极省</span> : null}
